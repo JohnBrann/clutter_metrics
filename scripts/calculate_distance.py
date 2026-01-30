@@ -1,89 +1,128 @@
 import argparse
 import csv
-from dataclasses import dataclass
-from typing import List, Tuple, Optional, Dict, Set
 import os
+import re
+import math
+from dataclasses import dataclass
 from glob import glob
+
 import numpy as np
+from PIL import Image
 import matplotlib.pyplot as plt
 from scipy.ndimage import binary_erosion
 from scipy.spatial import cKDTree
-import re
-import math
 
-# Optional robust contour extractor
-try:
-    from skimage import measure as skmeasure  # type: ignore
-    HAVE_SKIMAGE = True
-except Exception:
-    HAVE_SKIMAGE = False
 
-from PIL import Image
+# ----------------------------
+# Basic helpers
+# ----------------------------
 
-def imread_rgb(path: str) -> np.ndarray:
+def imread_rgb(path):
     return np.asarray(Image.open(path).convert("RGB"), dtype=np.uint8)
 
-def imwrite_rgb(path: str, arr: np.ndarray) -> None:
+def imwrite_rgb(path, arr):
     Image.fromarray(arr.astype(np.uint8)).save(path)
 
+def safe_basename_no_ext(path):
+    base = os.path.basename(path)
+    name, _ = os.path.splitext(base)
+    return name
 
+def rgb_to_hex(rgb):
+    return "#{:02x}{:02x}{:02x}".format(rgb[0], rgb[1], rgb[2])
+
+def color_distance(c1, c2):
+    a = np.array(c1, dtype=np.float32)
+    b = np.array(c2, dtype=np.float32)
+    return float(np.linalg.norm(a - b))
+
+
+# ----------------------------
+# Data model
+# ----------------------------
 
 @dataclass
 class Segment:
-    color: Tuple[int, int, int]
+    color: tuple
     name: str
     mask: np.ndarray
-    boundary_coords: np.ndarray  # Nx2 array of (y, x) coords (int32)
+    boundary_coords: np.ndarray   # Nx2 (y,x) int32
 
 
-def rgb_to_hex(rgb: Tuple[int, int, int]) -> str:
-    return "#{:02x}{:02x}{:02x}".format(*rgb)
+# ----------------------------
+# Boundary sampling
+# ----------------------------
+
+def extract_boundary_coords(mask):
+    """
+    Returns boundary pixels only (Nx2 y,x).
+    Avoids the interior-point fallback that can place points fully inside.
+    """
+    # Method A: erosion boundary
+    # eroded = binary_erosion(mask, structure=np.ones((3, 3), dtype=bool))
+    # boundary = mask & (~eroded)
+    # ys, xs = np.nonzero(boundary)
+
+    # if len(ys) > 0:
+    #     pts = np.stack([ys, xs], axis=1).astype(np.int32)
+    #     return np.unique(pts, axis=0)
+
+    # Method B: cheap "edge" test (4-neighborhood) if erosion fails
+    # A pixel is boundary if it's in mask and has any neighbor not in mask.
+    m = mask
+    up    = np.zeros_like(m); up[1:, :]  = m[:-1, :]
+    down  = np.zeros_like(m); down[:-1,:]= m[1:, :]
+    left  = np.zeros_like(m); left[:,1:] = m[:, :-1]
+    right = np.zeros_like(m); right[:,:-1]= m[:, 1:]
+
+    interior = m & up & down & left & right
+    boundary2 = m & (~interior)
+    ys, xs = np.nonzero(boundary2)
+
+    pts = np.stack([ys, xs], axis=1).astype(np.int32)
+    return np.unique(pts, axis=0)
 
 
-# ---------- contour / sampling helpers (unchanged) ----------
-
-def order_points_nearest_chain(pts: np.ndarray) -> np.ndarray:
+def order_points_nearest_chain(pts):
     if pts is None or len(pts) == 0:
-        return pts.astype(np.float64)
+        return np.empty((0, 2), dtype=np.float64)
 
     ptsf = pts.astype(np.float64)
-    N = len(ptsf)
-    if N == 1:
+    if len(ptsf) == 1:
         return ptsf.copy()
 
-    tree = cKDTree(ptsf[:, ::-1])  # query with (x,y)
-    visited = np.zeros(N, dtype=bool)
+    tree = cKDTree(ptsf[:, ::-1])  # (x,y)
+    visited = np.zeros(len(ptsf), dtype=bool)
     order = [0]
     visited[0] = True
 
-    for _ in range(1, N):
+    for _ in range(1, len(ptsf)):
         last = order[-1]
-        k = min(20, N)
-        dists, idxs = tree.query(ptsf[last, ::-1], k=k)
-        idxs_arr = np.atleast_1d(idxs)
-        found = False
-        for idx in idxs_arr:
-            if not visited[int(idx)]:
-                order.append(int(idx))
-                visited[int(idx)] = True
-                found = True
+        k = min(30, len(ptsf))
+        _, idxs = tree.query(ptsf[last, ::-1], k=k)
+        idxs = np.atleast_1d(idxs)
+
+        nxt = None
+        for idx in idxs:
+            idx = int(idx)
+            if not visited[idx]:
+                nxt = idx
                 break
-        if not found:
-            unvisited_idx = np.nonzero(~visited)[0]
-            if unvisited_idx.size == 0:
+
+        if nxt is None:
+            unv = np.nonzero(~visited)[0]
+            if unv.size == 0:
                 break
-            unvisited_pts = ptsf[unvisited_idx]
-            diffs = unvisited_pts - ptsf[last]
-            d2 = np.sum(diffs ** 2, axis=1)
-            a = int(unvisited_idx[int(np.argmin(d2))])
-            order.append(a)
-            visited[a] = True
+            diffs = ptsf[unv] - ptsf[last]
+            d2 = np.sum(diffs * diffs, axis=1)
+            nxt = int(unv[int(np.argmin(d2))])
 
-    ordered = ptsf[order]
-    return ordered
+        order.append(nxt)
+        visited[nxt] = True
 
+    return ptsf[order]
 
-def sample_points_along_perimeter(coords: np.ndarray, spacing_px: float) -> np.ndarray:
+def sample_points_along_chain(coords, spacing_px):
     if coords is None or len(coords) == 0:
         return np.empty((0, 2), dtype=np.int32)
 
@@ -92,233 +131,228 @@ def sample_points_along_perimeter(coords: np.ndarray, spacing_px: float) -> np.n
     if spacing_px <= 0:
         return np.unique(np.round(pts).astype(np.int32), axis=0)
 
-    try:
-        ordered = order_points_nearest_chain(pts)
-        if ordered.shape[0] < 3:
-            raise Exception("too few points for NN ordering")
-    except Exception:
-        centroid = pts.mean(axis=0)
-        angs = np.arctan2(pts[:, 0] - centroid[0], pts[:, 1] - centroid[1])
-        order = np.argsort(angs)
-        ordered = pts[order]
+    ordered = order_points_nearest_chain(pts)
+    if len(ordered) < 2:
+        return np.unique(np.round(ordered).astype(np.int32), axis=0)
 
-    if not np.allclose(ordered[0], ordered[-1]):
-        closed = np.vstack([ordered, ordered[0]])
-    else:
-        closed = ordered.copy()
-
-    seg_dists = np.sqrt(np.sum(np.diff(closed, axis=0) ** 2, axis=1))
+    seg_dists = np.sqrt(np.sum(np.diff(ordered, axis=0) ** 2, axis=1))
     cumdist = np.concatenate(([0.0], np.cumsum(seg_dists)))
-    total_perim = cumdist[-1]
+    total = cumdist[-1]
 
-    if total_perim <= 0:
-        pts_int = np.round(ordered).astype(np.int32)
-        uniq = np.unique(pts_int, axis=0)
-        return uniq
+    if total <= 0:
+        return np.unique(np.round(ordered).astype(np.int32), axis=0)
 
-    num_samples = max(1, int(np.floor(total_perim / spacing_px)) + 1)
-    sample_ds = np.linspace(0.0, total_perim, num=num_samples)
+    num_samples = max(2, int(np.floor(total / spacing_px)) + 1)
+    sample_ds = np.linspace(0.0, total, num=num_samples)
 
-    xs = closed[:, 1]
-    ys = closed[:, 0]
-
+    xs = ordered[:, 1]
+    ys = ordered[:, 0]
     samp_x = np.interp(sample_ds, cumdist, xs)
     samp_y = np.interp(sample_ds, cumdist, ys)
 
-    samp_pts = np.stack([samp_y, samp_x], axis=1)
-    samp_pts_int = np.round(samp_pts).astype(np.int32)
-    if samp_pts_int.size == 0:
-        return np.empty((0, 2), dtype=np.int32)
-
-    uniq = np.unique(samp_pts_int, axis=0)
-    return uniq
+    samp = np.stack([samp_y, samp_x], axis=1)
+    return np.unique(np.round(samp).astype(np.int32), axis=0)
 
 
-def extract_ordered_contour_from_mask(mask: np.ndarray) -> np.ndarray:
-    if HAVE_SKIMAGE:
-        try:
-            contours = skmeasure.find_contours(mask.astype(np.uint8), level=0.5)
-            if contours:
-                best = max(contours, key=lambda c: c.shape[0])
-                pts = np.round(best).astype(np.int32)
-                uniq = np.unique(pts, axis=0)
-                return uniq
-        except Exception:
-            pass
+# ----------------------------
+# Segment extraction
+# ----------------------------
 
-    eroded = binary_erosion(mask, structure=np.ones((3, 3), dtype=bool))
-    boundary = mask & (~eroded)
-    ys, xs = np.nonzero(boundary)
-    if len(ys) == 0:
-        ys, xs = np.nonzero(mask)
-    pts = np.stack([ys, xs], axis=1).astype(np.int32)
-    pts_unique = np.unique(pts, axis=0)
-    return pts_unique
-
-
-def find_segments(img: np.ndarray, min_pixels: int = 5, spacing_px: float = 8.0) -> List[Segment]:
-    H, W, C = img.shape
-    assert C == 3, "Expected RGB image"
-
+def find_segments(img, min_pixels, spacing_px):
     flat = img.reshape(-1, 3)
     colors, counts = np.unique(flat, axis=0, return_counts=True)
+    bg = tuple(map(int, colors[int(np.argmax(counts))]))
 
-    # Determine background by most-common color
-    color_counts = {tuple(map(int, c)): int(n) for c, n in zip(colors, counts)}
-    background_rgb = max(color_counts.items(), key=lambda x: x[1])[0]
-
-    segments: List[Segment] = []
-    for color in colors:
-        color_tuple = tuple(map(int, color))
-        if color_tuple == background_rgb:
+    segments = []
+    for c in colors:
+        color = tuple(map(int, c))
+        if color == bg:
             continue
 
-        mask = np.all(img == color, axis=2)
-        if mask.sum() < min_pixels:
+        mask = np.all(img == c, axis=2)
+        if int(mask.sum()) < min_pixels:
             continue
 
-        contour_pts = extract_ordered_contour_from_mask(mask)
-        if contour_pts is None or len(contour_pts) == 0:
+        boundary = extract_boundary_coords(mask)
+        sampled = sample_points_along_chain(boundary, spacing_px)
+        if len(sampled) == 0:
             continue
 
-        sampled_coords = sample_points_along_perimeter(contour_pts, spacing_px)
-        segments.append(Segment(
-            color=color_tuple,
-            name=rgb_to_hex(color_tuple),
-            mask=mask,
-            boundary_coords=sampled_coords
-        ))
+        segments.append(Segment(color=color, name=rgb_to_hex(color), mask=mask, boundary_coords=sampled))
 
-    # stable sort by name to keep deterministic ordering
     segments.sort(key=lambda s: s.name)
     return segments
 
 
-def find_border_segment(img: np.ndarray, min_pixels: int = 10, spacing_px: float = 8.0) -> Optional[Segment]:
-    white_rgb = (255, 255, 255)
-    H, W, _ = img.shape
-    mask = np.all(img == np.array(white_rgb, dtype=img.dtype), axis=2)
+# ----------------------------
+# Occlusion/color filtering
+# ----------------------------
 
-    if mask.sum() < min_pixels:
+SCENE_VIEW_RE = re.compile(r"theta(\d+)_phi(\d+)", flags=re.IGNORECASE)
+
+def parse_view_from_filename(filename):
+    m = SCENE_VIEW_RE.search(os.path.basename(filename))
+    if not m:
         return None
+    return m.group(0)
+    # return (int(m.group(1)), int(m.group(2)))
 
-    contour_pts = extract_ordered_contour_from_mask(mask)
-    sampled_coords = sample_points_along_perimeter(contour_pts, spacing_px)
+def load_colors_csv(colors_csv_path):
+    mapping = {}
+    if not os.path.isfile(colors_csv_path):
+        return mapping
 
-    return Segment(
-        color=white_rgb,
-        name="border",
-        mask=mask,
-        boundary_coords=sampled_coords
-    )
+    with open(colors_csv_path, newline="") as cf:
+        reader = csv.DictReader(cf)
+        for row in reader:
+            th = int(row.get("theta", 0))
+            ph = int(row.get("phi", 0))
+            fname = row.get("filename") or row.get("file") or ""
+            rgb = (int(row.get("r", 0)), int(row.get("g", 0)), int(row.get("b", 0)))
+            mapping[(th, ph, fname)] = rgb
+            if (0, 0, fname) not in mapping:
+                mapping[(0, 0, fname)] = rgb
+    return mapping
+
+def load_occlusion_csv(occl_csv_path, threshold):
+    excluded = {}
+    if not os.path.isfile(occl_csv_path):
+        return excluded
+
+    with open(occl_csv_path, newline="") as of:
+        reader = csv.DictReader(of)
+        for row in reader:
+            if row.get("level", "").strip().lower() != "object":
+                continue
+            pct = float(row.get("occlusion_pct", 0.0))
+            if pct < threshold:
+                continue
+            th = int(row.get("theta", 0))
+            ph = int(row.get("phi", 0))
+            fname = row.get("filename", "")
+            excluded.setdefault((th, ph), set()).add(fname)
+    return excluded
+
+def build_excluded_colors_map(excluded_by_view, color_map):
+    out = {}
+    for (th, ph), fnames in excluded_by_view.items():
+        s = set()
+        for fname in fnames:
+            if (th, ph, fname) in color_map:
+                s.add(color_map[(th, ph, fname)])
+            elif (0, 0, fname) in color_map:
+                s.add(color_map[(0, 0, fname)])
+        if s:
+            out[(th, ph)] = s
+    return out
+
+def filter_segments_by_excluded_colors(segments, excluded_colors, color_tol):
+    if not excluded_colors:
+        return segments, []
+
+    kept = []
+    removed = []
+    for seg in segments:
+        drop = False
+        for ex in excluded_colors:
+            if color_tol == 0:
+                if seg.color == ex:
+                    drop = True
+                    break
+            else:
+                if color_distance(seg.color, ex) <= float(color_tol):
+                    drop = True
+                    break
+        if drop:
+            removed.append(seg)
+        else:
+            kept.append(seg)
+    return kept, removed
 
 
-def compute_all_connections_every_point(
-    segments: List[Segment],
-    border: Optional[Segment]
-) -> List[Tuple[int, int, float, Tuple[int, int], Tuple[int, int]]]:
-    results: List[Tuple[int, int, float, Tuple[int, int], Tuple[int, int]]] = []
+# ----------------------------
+# Nearest-other distance computation
+# ----------------------------
 
-    border_pts = np.array(border.boundary_coords) if (border is not None) else np.empty((0, 2), dtype=np.int32)
-    border_tree = None
-    if border is not None and len(border_pts) > 0:
-        border_tree = cKDTree(border_pts[:, ::-1])  # use x,y for KD-tree
+def compute_nearest_object_distances(segments):
+    """
+    For EACH boundary point of EACH segment:
+      connect to the nearest boundary point on ANY OTHER segment.
 
-    all_obj_pts = []
-    all_obj_owner = []
-    for j, seg in enumerate(segments):
-        for pt in seg.boundary_coords:
-            all_obj_pts.append(pt)
-            all_obj_owner.append(j)
-    all_obj_pts = np.array(all_obj_pts) if len(all_obj_pts) > 0 else np.empty((0, 2), dtype=np.int32)
+    This guarantees every point gets a connection if there is at least
+    one other segment with boundary points.
+    """
+    if len(segments) < 2:
+        return []
 
-    global_tree = None
-    if len(all_obj_pts) > 0:
-        global_tree = cKDTree(all_obj_pts[:, ::-1])
+    # Flatten all points + owners
+    all_pts_list = []
+    owners = []
+    for i, seg in enumerate(segments):
+        pts = seg.boundary_coords
+        if pts is None or len(pts) == 0:
+            continue
+        all_pts_list.append(pts)
+        owners.extend([i] * len(pts))
 
-    for i, src_seg in enumerate(segments):
-        src_pts = np.array(src_seg.boundary_coords)
-        if src_pts.size == 0:
+    if not all_pts_list:
+        return []
+
+    all_pts = np.vstack(all_pts_list).astype(np.int32)
+    owners = np.array(owners, dtype=np.int32)
+
+    rows = []
+
+    # For each segment, build a KD-tree of "all other segments" once
+    for i, seg in enumerate(segments):
+        src_pts = seg.boundary_coords
+        if src_pts is None or len(src_pts) == 0:
             continue
 
-        for src_pt in src_pts:
-            src_y, src_x = int(src_pt[0]), int(src_pt[1])
+        other_mask = owners != i
+        other_pts = all_pts[other_mask]
 
-            if border_tree is not None:
-                dist_b, idx_b = border_tree.query([src_x, src_y], k=1)
-                tgt_b = tuple(int(x) for x in border_pts[int(idx_b)])
-                results.append((i, -1, float(dist_b), (src_y, src_x), (tgt_b[0], tgt_b[1])))
+        # If there are no other points, no connections possible
+        if other_pts.shape[0] == 0:
+            continue
 
-            if global_tree is not None and len(all_obj_pts) > 0:
-                Kprobe = min(10, max(1, len(all_obj_pts)))
-                dists, idxs = global_tree.query([src_x, src_y], k=Kprobe)
-                if Kprobe == 1:
-                    dists = np.array([dists])
-                    idxs = np.array([idxs])
+        other_tree = cKDTree(other_pts[:, ::-1].astype(np.float64))  # (x,y)
 
-                for dist_o, idx_o in zip(np.atleast_1d(dists), np.atleast_1d(idxs)):
-                    owner = all_obj_owner[int(idx_o)]
-                    if owner != i:
-                        tgt_pt = all_obj_pts[int(idx_o)]
-                        results.append((i, owner, float(dist_o), (src_y, src_x), (int(tgt_pt[0]), int(tgt_pt[1]))))
-                        break
+        for (sy, sx) in src_pts:
+            dist, idx = other_tree.query([float(sx), float(sy)], k=1)
+            ty, tx = other_pts[int(idx)]
+            rows.append((i, -1, float(dist), int(sy), int(sx), int(ty), int(tx)))
 
-    return results
+    # NOTE: tgt_idx is set to -1 above because we didn't track target segment id.
+    # If you want target_obj/target_idx in the CSV, we can add it back cleanly.
+    return rows
 
 
-def draw_visualization(
-    img: np.ndarray,
-    segments: List[Segment],
-    border: Optional[Segment],
-    connections: List[Tuple[int, int, float, Tuple[int, int], Tuple[int, int]]],
-    gripper_width: float,
-    out_path: str
-):
+
+# ----------------------------
+# Visualization (NEW)
+# ----------------------------
+
+def visualize_connections(img, segments, rows, out_path):
+    """
+    Saves a PNG showing:
+      - image
+      - sampled boundary points
+      - all nearest-neighbor connection lines (GREEN)
+    """
     H, W, _ = img.shape
-    fig, ax = plt.subplots(figsize=(max(6, W / 50), max(6, H / 50)), dpi=150)
+    fig, ax = plt.subplots(figsize=(max(6, W / 60), max(6, H / 60)), dpi=150)
     ax.imshow(img)
 
     for seg in segments:
         pts = seg.boundary_coords
         if pts is None or len(pts) == 0:
             continue
-        ys = pts[:, 0]
-        xs = pts[:, 1]
-        ax.scatter(xs, ys, s=8, color='blue', alpha=0.9, zorder=6, edgecolors='white', linewidths=0.3)
+        ax.scatter(pts[:, 1], pts[:, 0], s=6, alpha=0.9, linewidths=0)
 
-    border_targets = []
-    object_targets = []
-
-    for src_idx, tgt_idx, dist, (src_y, src_x), (tgt_y, tgt_x) in connections:
-        color_line = "red" if dist < gripper_width else "lime"
-        ax.plot([src_x, tgt_x], [src_y, tgt_y], linewidth=0.8, alpha=0.85, color=color_line, zorder=5)
-        if tgt_idx == -1:
-            border_targets.append((tgt_x, tgt_y))
-        else:
-            object_targets.append((tgt_x, tgt_y))
-
-    if border is not None and border_targets:
-        bt = np.array(border_targets, dtype=np.int32)
-        bt_unique = np.unique(bt, axis=0)
-        ax.scatter(bt_unique[:, 0], bt_unique[:, 1], s=18, marker='s', color='magenta', zorder=7, edgecolors='white', linewidths=0.4)
-
-    if object_targets:
-        ot = np.array(object_targets, dtype=np.int32)
-        ot_unique = np.unique(ot, axis=0)
-        ax.scatter(ot_unique[:, 0], ot_unique[:, 1], s=14, marker='o', color='orange', zorder=7, edgecolors='white', linewidths=0.4)
-
-    border_note = "Magenta squares: border targets (nearest)\n" if border is not None else ""
-    ax.text(
-        10, 20,
-        f"Gripper width: {gripper_width:.1f} px\n"
-        f"Blue: sampled source points\n"
-        f"{border_note}"
-        f"Orange circles: object targets (nearest)\n"
-        f"Red lines: blocked (<gripper)\n"
-        f"Green lines: clear (>=gripper)",
-        fontsize=8, color="white",
-        bbox=dict(boxstyle="round,pad=0.4", fc="black", ec="none", alpha=0.7)
-    )
+    # GREEN connection lines
+    for (src_i, tgt_i, dist, sy, sx, ty, tx) in rows:
+        ax.plot([sx, tx], [sy, ty], linewidth=0.6, alpha=0.8, color="green")
 
     ax.set_axis_off()
     fig.tight_layout(pad=0)
@@ -326,443 +360,136 @@ def draw_visualization(
     plt.close(fig)
 
 
-def compute_metrics(connections: List[Tuple], gripper_width: float) -> dict:
-    distances = [d for _, _, d, _, _ in connections]
+# ----------------------------
+# Per-image processing
+# ----------------------------
 
-    if len(distances) == 0:
-        return {
-            "num_connections": 0,
-            "blocked_connections": 0,
-            "fraction_blocked": 0.0,
-            "min_gap_px": float('nan'),
-            "mean_gap_px": float('nan'),
-            "median_gap_px": float('nan')
-        }
-
-    distances = np.array(distances)
-    blocked = distances < gripper_width
-
-    return {
-        "num_connections": int(len(distances)),
-        "blocked_connections": int(np.sum(blocked)),
-        "fraction_blocked": float(np.mean(blocked)),
-        "min_gap_px": float(np.min(distances)),
-        "mean_gap_px": float(np.mean(distances)),
-        "median_gap_px": float(np.median(distances))
-    }
-
-
-# ---------- helpers for occlusion/color CSV processing ----------
-
-SCENE_VIEW_RE = re.compile(r"theta(\d+)_phi(\d+)", flags=re.IGNORECASE)
-
-
-def parse_view_from_filename(filename: str) -> Optional[Tuple[int, int]]:
-    m = SCENE_VIEW_RE.search(os.path.basename(filename))
-    if not m:
-        return None
-    return (int(m.group(1)), int(m.group(2)))
-
-
-def load_colors_csv(colors_csv_path: str) -> Dict[Tuple[int, int, str], Tuple[int, int, int]]:
-    """
-    Load per_object_colors.csv that has fields: theta,phi,obj_id,filename,r,g,b
-    Returns a dict keyed by (theta,phi,filename) -> (r,g,b).
-    """
-    mapping: Dict[Tuple[int, int, str], Tuple[int, int, int]] = {}
-    if not colors_csv_path or not os.path.isfile(colors_csv_path):
-        return mapping
-    with open(colors_csv_path, newline="") as cf:
-        reader = csv.DictReader(cf)
-        for row in reader:
-            try:
-                th = int(row.get("theta", row.get("theta", "")))
-                ph = int(row.get("phi", row.get("phi", "")))
-                fname = row.get("filename") or row.get("file") or ""
-                r = int(row.get("r", 0))
-                g = int(row.get("g", 0))
-                b = int(row.get("b", 0))
-                mapping[(th, ph, fname)] = (r, g, b)
-                # also add fallback mapping keyed only by filename (if not present)
-                if (0, 0, fname) not in mapping:
-                    mapping[(0, 0, fname)] = (r, g, b)
-            except Exception:
-                continue
-    return mapping
-
-
-def load_occlusion_csv(occl_csv_path: str, threshold: float) -> Dict[Tuple[int, int], Set[str]]:
-    """
-    Load per_object_occlusion.csv that has fields: level,theta,phi,obj_id,filename,occlusion_pct,...
-    Returns dict mapping (theta,phi) -> set(filenames) where occlusion_pct >= threshold.
-    """
-    excluded_by_view: Dict[Tuple[int, int], Set[str]] = {}
-    if not occl_csv_path or not os.path.isfile(occl_csv_path):
-        return excluded_by_view
-    with open(occl_csv_path, newline="") as of:
-        reader = csv.DictReader(of)
-        for row in reader:
-            try:
-                level = row.get("level", "")
-                if level.strip().lower() != "object":
-                    continue
-                th = int(row.get("theta", 0))
-                ph = int(row.get("phi", 0))
-                fname = row.get("filename", "")
-                pct = float(row.get("occlusion_pct", 0.0))
-                if pct >= threshold:
-                    key = (th, ph)
-                    excluded_by_view.setdefault(key, set()).add(fname)
-            except Exception:
-                continue
-    return excluded_by_view
-
-
-def color_distance(c1: Tuple[int, int, int], c2: Tuple[int, int, int]) -> float:
-    return math.sqrt((int(c1[0]) - int(c2[0])) ** 2 + (int(c1[1]) - int(c2[1])) ** 2 + (int(c1[2]) - int(c2[2])) ** 2)
-
-
-# ---------- main processing / I/O ----------
-
-def safe_basename_no_ext(path: str) -> str:
-    base = os.path.basename(path)
-    name, _ = os.path.splitext(base)
-    return name
-
-
-def process_single_image(img_path: str, out_dir: str, args: argparse.Namespace,
-                         excluded_colors_for_view: Optional[Set[Tuple[int, int, int]]] = None,
-                         color_tol: int = 0):
-    """
-    Process one segmented scene image. Returns a summary dict with counts:
-      {
-        "scene": basename,
-        "num_segments_before": int,
-        "num_segments_after": int,
-        "num_excluded_segments": int,
-        "total_connections": int,
-        "blocked_connections": int,
-        "fraction_blocked": float
-      }
-    """
-    print(f"\nProcessing: {img_path}")
+def process_single_image(img_path, out_dir, spacing_px, min_pixels, excluded_colors_for_view, color_tol):
     img = imread_rgb(img_path)
-    if img.ndim == 2:
-        img = np.stack([img, img, img], axis=-1)
-    if img.shape[2] == 4:
-        img = img[:, :, :3]
-    img = img.astype(np.uint8)
+    segments_all = find_segments(img, min_pixels=min_pixels, spacing_px=spacing_px)
 
-    # Find segments from original image
-    segments_all = find_segments(img, spacing_px=args.spacing)
-    num_before = len(segments_all)
-    print(f"  Found {num_before} objects before filtering: {[s.name for s in segments_all]}")
-
-    # Compute explicit white border from the original image (unchanged by filtering)
-    border = find_border_segment(img, spacing_px=args.spacing)
-    if border is None:
-        if args.verbose:
-            print("  No explicit white border detected. Border connections will be DISABLED.")
-    else:
-        if args.verbose:
-            print(f"  White border detected; sampled {len(border.boundary_coords)} border points")
-
-    # Apply occlusion-based color filtering (if provided)
-    filtered_out = []
-    segments = segments_all
-    if excluded_colors_for_view:
-        keep_segments = []
-        for seg in segments_all:
-            matched = False
-            for ex_col in excluded_colors_for_view:
-                if color_tol == 0:
-                    if tuple(seg.color) == tuple(ex_col):
-                        matched = True
-                        break
-                else:
-                    if color_distance(tuple(seg.color), tuple(ex_col)) <= color_tol:
-                        matched = True
-                        break
-            if matched:
-                filtered_out.append((seg, seg.color))
-            else:
-                keep_segments.append(seg)
-        segments = keep_segments
-        print(f"  Filtered out {len(filtered_out)} segments by occlusion-color (remaining {len(segments)}).")
-        if len(filtered_out) > 0 and args.verbose:
-            print("   Filtered colors:", [c for (_, c) in filtered_out])
-
-    num_after = len(segments)
-    num_excluded = num_before - num_after
-
-    if len(segments) == 0:
-        print("  No objects remain after filtering — skipping outputs.")
-        # still write a masked image (all-black) for completeness
-        basename = safe_basename_no_ext(img_path)
-        masked_img = img.copy()
-        for seg in segments_all:
-            try:
-                masked_img[seg.mask] = np.array([0, 0, 0], dtype=np.uint8)
-            except Exception:
-                ys, xs = np.nonzero(seg.mask)
-                masked_img[ys, xs] = np.array([0, 0, 0], dtype=np.uint8)
-        masked_out_path = os.path.join(out_dir, f"{basename}_masked.png")
-        try:
-            imwrite_rgb(masked_out_path, masked_img)
-        except Exception:
-            pass
-
-        return {
-            "scene": basename,
-            "num_segments_before": num_before,
-            "num_segments_after": num_after,
-            "num_excluded_segments": num_excluded,
-            "total_connections": 0,
-            "blocked_connections": 0,
-            "fraction_blocked": 0.0
-        }
-
-    # Create a masked image that blacks-out excluded segments (for visualization)
-    masked_img = img.copy()
-    if filtered_out:
-        for seg, _ in filtered_out:
-            # seg.mask is boolean mask; set those pixels to black
-            try:
-                masked_img[seg.mask] = np.array([0, 0, 0], dtype=np.uint8)
-            except Exception:
-                ys, xs = np.nonzero(seg.mask)
-                masked_img[ys, xs] = np.array([0, 0, 0], dtype=np.uint8)
-
-    # Save masked raw image (no overlay) so user can inspect raw blacked-out input
-    basename = safe_basename_no_ext(img_path)
-    masked_out_path = os.path.join(out_dir, f"{basename}_masked.png")
-    try:
-        imwrite_rgb(masked_out_path, masked_img)
-        if args.verbose:
-            print(f"  Saved masked raw image (excluded objects blacked out): {masked_out_path}")
-    except Exception as e:
-        print(f"[warn] failed to write masked image {masked_out_path}: {e}")
-
-    # Compute connections on *remaining* segments (border computed earlier from original image)
-    connections = compute_all_connections_every_point(segments, border)
-    total_connections = len(connections)
-    blocked_connections = int(sum(1 for (_, _, d, _, _) in connections if d < args.gripper_width))
-    fraction_blocked = (blocked_connections / total_connections) if total_connections > 0 else 0.0
-    print(f"  Total connections found: {total_connections} (blocked: {blocked_connections})")
-
-    viz_out = os.path.join(out_dir, f"{basename}_distances_viz.png")
-    csv_out = os.path.join(out_dir, f"{basename}_distances.csv")
-    metrics_out = os.path.join(out_dir, f"{basename}_metrics.csv")
-
-    # Write per-point CSV
-    with open(csv_out, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            "source_obj", "source_idx", "target_obj", "target_idx",
-            "distance_px", "src_x", "src_y", "tgt_x", "tgt_y",
-            "is_blocked", "clearance_px"
-        ])
-        for src_idx, tgt_idx, dist, (src_y, src_x), (tgt_y, tgt_x) in connections:
-            src_name = segments[src_idx].name
-            if tgt_idx == -1:
-                tgt_name = "border"
-                tgt_idx_out = -1
-            else:
-                tgt_name = segments[tgt_idx].name
-                tgt_idx_out = int(tgt_idx)
-
-            is_blocked = 1 if dist < args.gripper_width else 0
-            clearance = dist - args.gripper_width
-            writer.writerow([
-                src_name, int(src_idx), tgt_name, tgt_idx_out,
-                f"{dist:.4f}", int(src_x), int(src_y), int(tgt_x), int(tgt_y),
-                is_blocked, f"{clearance:.4f}"
-            ])
-    if args.verbose:
-        print(f"  Saved per-point distances to: {csv_out}")
-
-    # Write metrics CSV (use compute_metrics for consistency)
-    metrics = compute_metrics(connections, args.gripper_width)
-    with open(metrics_out, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["metric", "value"])
-        for k, v in metrics.items():
-            writer.writerow([k, v])
-    if args.verbose:
-        print(f"  Saved metrics to: {metrics_out}")
-        print(f"  Metrics: {metrics}")
-
-    # Create visualization PNG drawn on the masked image so excluded objects appear blacked out.
-    # The draw_visualization function draws sampled points and lines only for 'segments' (remaining).
-    draw_visualization(masked_img, segments, border, connections, args.gripper_width, viz_out)
-    if args.verbose:
-        print(f"  Saved visualization to: {viz_out}")
-
-    return {
-        "scene": basename,
-        "num_segments_before": num_before,
-        "num_segments_after": num_after,
-        "num_excluded_segments": num_excluded,
-        "total_connections": total_connections,
-        "blocked_connections": blocked_connections,
-        "fraction_blocked": fraction_blocked
-    }
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Batch compute 2D perimeter-corrected distances for segmented images in a folder."
+    segments, removed = filter_segments_by_excluded_colors(
+        segments_all, excluded_colors_for_view, color_tol
     )
 
-    # CHANGED: single dataset_name argument
-    parser.add_argument("--dataset-name", required=True,
-                        help="Dataset folder name under ./data/<dataset_name>/")
+    # Mask excluded segments to black
+    masked = img.copy()
+    for seg in removed:
+        masked[seg.mask] = np.array([0, 0, 0], dtype=np.uint8)
 
-    # Keep these knobs (still useful)
-    parser.add_argument("--glob", default="*.png",
-                        help="Glob pattern to select images in input-dir (default '*.png').")
-    parser.add_argument("--gripper-width", type=float, default=32.0,
-                        help="Gripper width in pixels (threshold for blocked/clear).")
-    parser.add_argument("--spacing", type=float, default=16.0,
-                        help="Distance between sampled boundary points in pixels (default: 16.0).")
-    parser.add_argument("--min-pixels", type=int, default=5,
-                        help="Minimum pixels for an object segment to be considered (default: 5).")
-    parser.add_argument("--skip-patterns", default="_distances,_metrics,_masked",
-                        help="Comma-separated substrings; files containing any will be skipped (default: '_distances,_metrics,_masked').")
-    parser.add_argument("--verbose", action="store_true", help="Verbose logging")
+    base = safe_basename_no_ext(img_path)
 
-    # occlusion/color filtering knobs (paths are derived automatically)
-    parser.add_argument("--occlusion-threshold", type=float, default=50.0,
-                        help="Occlusion threshold pct: objects with occlusion_pct >= this are excluded (default 50.0).")
-    parser.add_argument("--occlusion-color-tol", type=int, default=0,
-                        help="Color distance tolerance (Euclidean) used when comparing segment color to excluded colors (default 0 = exact match).")
+    masked_out = os.path.join(out_dir, f"{base}_masked.png")
+    imwrite_rgb(masked_out, masked)
 
+    # Compute distances and write CSV + trailing average row
+    rows = compute_nearest_object_distances(segments)
+    csv_out = os.path.join(out_dir, f"{base}_distances.csv")
+
+    dists = [r[2] for r in rows]
+    avg = float(np.mean(dists)) if len(dists) > 0 else float("nan")
+
+    with open(csv_out, "w", newline="") as f:
+        w = csv.writer(f)
+        # w.writerow(["source_obj", "source_idx", "target_obj", "target_idx",
+        #             "distance_px", "src_x", "src_y", "tgt_x", "tgt_y"])
+        w.writerow(["source_obj", "source_idx","distance_px"])
+
+        for (src_i, tgt_i, dist, sy, sx, ty, tx) in rows:
+            # w.writerow([
+            #     segments[src_i].name, src_i,
+            #     segments[tgt_i].name, tgt_i,
+            #     f"{dist:.3f}",
+            #     sx, sy, tx, ty
+            # ])
+            w.writerow([
+                segments[src_i].name, src_i,
+                f"{dist:.3f}",
+            ])
+
+        w.writerow([])
+        w.writerow(["AVG_DISTANCE_PX", f"{avg:.3f}"])
+
+    #  save visualization
+    viz_out = os.path.join(out_dir, f"{base}_distances_viz.png")
+    visualize_connections(masked, segments, rows, viz_out)
+
+    return avg
+
+
+# ----------------------------
+# Main
+# ----------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="Batch compute 2D perimeter-corrected distances for segmented images in a folder.")
+    parser.add_argument("--dataset-name", required=True, help="Dataset folder name under ./data/<dataset_name>/")
+    parser.add_argument("--spacing", type=float, default=16.0, help="Distance between sampled boundary points in pixels (default: 16.0).")
+    parser.add_argument("--min-pixels", type=int, default=5, help="Minimum pixels for an object segment to be considered (default: 5).")
+    parser.add_argument("--skip-patterns", default="_distances,_metrics,_masked", help="Comma-separated substrings; files containing any will be skipped (default: '_distances,_metrics,_masked').")
+    parser.add_argument("--occlusion-threshold", type=float, default=50.0, help="Occlusion threshold pct: objects with occlusion_pct >= this are excluded (default 50.0).")
+    parser.add_argument("--occlusion-color-tol", type=int, default=0, help="Color distance tolerance (Euclidean) used when comparing segment color to excluded colors (default 0 = exact match).")
     args = parser.parse_args()
 
-    # CHANGED: derive paths from dataset_name
-    base_dir = os.path.join(".", "data", args.dataset_name)
+    base_dir = os.path.join("..", "data", "replica", args.dataset_name)
     input_dir = os.path.join(base_dir, "scene_groundtruths")
     out_dir = os.path.join(base_dir, "distance")
     os.makedirs(out_dir, exist_ok=True)
 
-    # CHANGED: occlusion/color CSV locations (derived)
-    args.occlusion_csv = os.path.join(base_dir, "occlusion", "per_object_occlusion.csv")
-    args.colors_csv = os.path.join(base_dir, "occlusion", "per_object_colors.csv")
+    occl_csv = os.path.join(base_dir, "occlusion", "per_object_occlusion.csv")
+    colors_csv = os.path.join(base_dir, "occlusion", "per_object_colors.csv")
 
-    print(f"Input dir:       {input_dir}")
-    print(f"Output dir:      {out_dir}")
-    print(f"Occlusion CSV:   {args.occlusion_csv}")
-    print(f"Colors CSV:      {args.colors_csv}")
+    color_map = load_colors_csv(colors_csv)
+    excluded_by_view = load_occlusion_csv(occl_csv, args.occlusion_threshold)
+    excluded_colors_map = build_excluded_colors_map(excluded_by_view, color_map)
 
-    pattern = args.glob
-
-
-    # Load color mapping (if provided)
-    color_map = load_colors_csv(args.colors_csv)  # keyed by (theta,phi,filename) and fallback (0,0,filename)
-    if args.colors_csv:
-        print(f"Loaded colors CSV entries: {len(color_map)} (including filename fallbacks)")
-
-    # Load occlusion CSV and build set of filenames to exclude per view
-    excluded_by_view = load_occlusion_csv(args.occlusion_csv, args.occlusion_threshold)
-    if args.occlusion_csv:
-        print(f"Loaded occlusion CSV; views with exclusions: {len(excluded_by_view)}")
-
-    # Build mapping of excluded colors per (theta,phi)
-    excluded_colors_map: Dict[Tuple[int, int], Set[Tuple[int, int, int]]] = {}
-    for (th, ph), fnames in excluded_by_view.items():
-        ex_colors: Set[Tuple[int, int, int]] = set()
-        for fname in fnames:
-            # try exact keyed mapping first
-            if (th, ph, fname) in color_map:
-                ex_colors.add(color_map[(th, ph, fname)])
-            elif (0, 0, fname) in color_map:
-                ex_colors.add(color_map[(0, 0, fname)])
-            else:
-                # attempt to search any key with that filename
-                found = False
-                for (kth, kph, kfname), rgb in color_map.items():
-                    if kfname == fname:
-                        ex_colors.add(rgb)
-                        found = True
-                        break
-                if not found:
-                    print(f"[warn] Could not find color for excluded filename '{fname}' (theta{th}_phi{ph}) in colors CSV; skipping exclusion for that file.")
-        if ex_colors:
-            excluded_colors_map[(th, ph)] = ex_colors
-
-    if excluded_colors_map:
-        total_ex_colors = sum(len(s) for s in excluded_colors_map.values())
-        print(f"Built excluded-colors map for {len(excluded_colors_map)} views (total colors: {total_ex_colors}).")
-    else:
-        if args.occlusion_csv or args.colors_csv:
-            print("No excluded colors found (check occlusion/colors CSV paths and thresholds).")
-
-    # Build list of files to process
-    search_path = os.path.join(input_dir, pattern)
-    files = sorted(glob(search_path))
     skip_subs = [s.strip() for s in args.skip_patterns.split(",") if s.strip()]
 
-    if not files:
-        raise FileNotFoundError(f"No files found matching: {search_path}")
-
-    print(f"Found {len(files)} image files to consider in: {input_dir}")
+    files = sorted(glob(os.path.join(input_dir, "*.png")))
     processed = 0
 
-    # accumulator for per-scene summary rows
-    summary_rows = []
+    view_avgs = []   # list of (view, avg_distance)
 
     for fpath in files:
         base = os.path.basename(fpath)
-        # Skip files that look like outputs (contain skip substrings)
         if any(sub in base for sub in skip_subs):
-            if args.verbose:
-                print(f"Skipping (matches skip pattern): {base}")
             continue
 
-        # Determine view key for this scene by parsing its filename
         view = parse_view_from_filename(base)
-        excluded_colors_for_view = None
-        if view is not None and view in excluded_colors_map:
-            excluded_colors_for_view = excluded_colors_map[view]
-            if args.verbose:
-                print(f"Applying {len(excluded_colors_for_view)} excluded colors for view theta{view[0]}_phi{view[1]}")
-        else:
-            if args.verbose and (args.occlusion_csv or args.colors_csv):
-                print(f"No exclusions for scene {base} (view {view})")
+        excluded_colors_for_view = excluded_colors_map.get(view, None) if view else None
 
-        try:
-            info = process_single_image(fpath, out_dir, args, excluded_colors_for_view=excluded_colors_for_view, color_tol=args.occlusion_color_tol)
-            processed += 1
-            if info:
-                summary_rows.append(info)
-        except Exception as e:
-            print(f"[error] Failed processing {fpath}: {e}")
+        avg_distance = process_single_image(
+            fpath,
+            out_dir=out_dir,
+            spacing_px=args.spacing,
+            min_pixels=args.min_pixels,
+            excluded_colors_for_view=excluded_colors_for_view,
+            color_tol=args.occlusion_color_tol,
+        )
 
-    # Write consolidated summary CSV
-    summary_csv_path = os.path.join(out_dir, "connections_summary.csv")
-    if summary_rows:
-        fieldnames = ["scene", "num_segments_before", "num_segments_after", "num_excluded_segments",
-                      "total_connections", "blocked_connections", "fraction_blocked"]
-        try:
-            with open(summary_csv_path, "w", newline="") as sf:
-                writer = csv.DictWriter(sf, fieldnames=fieldnames)
-                writer.writeheader()
-                for row in summary_rows:
-                    # ensure fraction_blocked is formatted
-                    out_row = {k: row.get(k, "") for k in fieldnames}
-                    if out_row.get("fraction_blocked") is not None:
-                        out_row["fraction_blocked"] = f"{float(out_row['fraction_blocked']):.6f}"
-                    writer.writerow(out_row)
-            print(f"\nWrote consolidated connections summary to: {summary_csv_path}")
-        except Exception as e:
-            print(f"[error] Failed to write summary CSV {summary_csv_path}: {e}")
-    else:
-        print("\nNo per-scene summary rows to write.")
+        processed += 1
 
-    print("\nBatch complete.")
-    print(f"Processed {processed} images. Outputs written to: {out_dir}")
+        # if not math.isnan(avg_distance):
+        view_avgs.append((view, avg_distance))
+
+    # ---- write single summary CSV ----
+    summary_csv = os.path.join(out_dir, "distance_summary.csv")
+
+    with open(summary_csv, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["viewpoint", "avg_distance"])
+
+        for view, avg in view_avgs:
+            w.writerow([view, f"{avg:.3f}"])
+
+        # scene average (mean of per-view avgs)
+        scene_avg = sum(a for _, a in view_avgs) / len(view_avgs)
+
+        w.writerow(["full_scene", f"{scene_avg:.3f}"])
+
+    print(f"Processed {processed} images.")
+    print(f"Summary CSV written to: {summary_csv}")
 
 
 if __name__ == "__main__":
     main()
-

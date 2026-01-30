@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPLICA_ROOT="../data/replica"
+REPLICA_ROOT="../data/replica_copy"
 
 for scene_dir in "$REPLICA_ROOT"/*; do
   [[ -d "$scene_dir" ]] || continue

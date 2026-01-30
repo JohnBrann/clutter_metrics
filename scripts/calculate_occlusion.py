@@ -317,7 +317,7 @@ def resolve_scene_root(dataset_name: str) -> str:
         return p_old
 
     # Case 3: replica layout: ../data/replica/<dataset_name>
-    p_rep = os.path.join("..", "data", "replica", dataset_name)
+    p_rep = os.path.join("..", "data", "replica_copy", dataset_name)
     if os.path.exists(p_rep):
         return p_rep
 
@@ -351,7 +351,7 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     # print("Computing representative colors for each object image...")
-    per_object_color_rows = []  # list of dicts to write later
+    per_object_color_rows = []  
     # objects_by_view: keys are (th, ph) as strings, values are lists [(obj_id, path), ...]
     for (th, ph), obj_list in sorted(objects_by_view.items(), key=lambda kv: (int(kv[0][0]), int(kv[0][1]))):
         for obj_id, path in obj_list:
@@ -396,7 +396,7 @@ def main():
     # Collect per-view averages and stds for writing the simplified CSV and plotting
     view_summaries = []  # list of (view_name:str, view_avg:float, view_std:float)
 
-    # *** ADDED: collect all per-object rows across all views
+    #  collect all per-object rows across all views
     all_per_object_rows = []
 
     # Deterministic order over viewpoints (sort by theta, then phi as ints)
@@ -416,7 +416,7 @@ def main():
         view_name = f"theta{th}_phi{ph}"
         view_summaries.append((view_name, view_avg, view_std))
 
-        # *** ADDED: extend global per-object rows
+        # : extend global per-object rows
         all_per_object_rows.extend(per_object_rows)
 
         all_pcts.extend(pcts)
@@ -434,7 +434,7 @@ def main():
     # Write simplified CSV: one row per viewpoint (viewpoint, occlusion), final row full_scene
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["viewpoint", "occlusion"])
+        writer.writerow(["viewpoint", "avg_occlusion"])
         for view_name, view_avg, _ in view_summaries:
             writer.writerow([view_name, f"{view_avg:.6f}"])
         # final overall row
