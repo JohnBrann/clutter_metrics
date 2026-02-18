@@ -54,10 +54,6 @@ class Segment:
 # ----------------------------
 
 def extract_boundary_coords(mask):
-    """
-    Returns boundary pixels only (Nx2 y,x).
-    Avoids the interior-point fallback that can place points fully inside.
-    """
     # Method A: erosion boundary
     # eroded = binary_erosion(mask, structure=np.ones((3, 3), dtype=bool))
     # boundary = mask & (~eroded)
@@ -328,18 +324,68 @@ def compute_nearest_object_distances(segments):
     return rows
 
 
+def bresenham_line(y0, x0, y1, x1):
+    """
+    Integer grid traversal of a line from (y0,x0) to (y1,x1).
+    Returns list of (y,x) pixels including endpoints.
+    """
+    x0 = int(x0); y0 = int(y0); x1 = int(x1); y1 = int(y1)
+
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
+
+    err = dx - dy
+    x, y = x0, y0
+
+    pts = []
+    while True:
+        pts.append((y, x))
+        if x == x1 and y == y1:
+            break
+        e2 = 2 * err
+        if e2 > -dy:
+            err -= dy
+            x += sx
+        if e2 < dx:
+            err += dx
+            y += sy
+    return pts
+
+
+def remove_self_overlapping_lines(rows, segments, ignore_start_px=2):
+    if not rows:
+        return rows
+
+    filtered = []
+    for (src_i, tgt_i, dist, sy, sx, ty, tx) in rows:
+        src_mask = segments[src_i].mask
+        H, W = src_mask.shape
+
+        line_pts = bresenham_line(sy, sx, ty, tx)
+
+        # Skip the first few pixels near the source boundary point
+        check_pts = line_pts[ignore_start_px:] if ignore_start_px > 0 else line_pts
+
+        overlaps_self = False
+        for (y, x) in check_pts:
+            if 0 <= y < H and 0 <= x < W and src_mask[y, x]:
+                overlaps_self = True
+                break
+
+        if not overlaps_self:
+            filtered.append((src_i, tgt_i, dist, sy, sx, ty, tx))
+
+    return filtered
+
+
 
 # ----------------------------
-# Visualization (NEW)
+# Visualization
 # ----------------------------
 
 def visualize_connections(img, segments, rows, out_path):
-    """
-    Saves a PNG showing:
-      - image
-      - sampled boundary points
-      - all nearest-neighbor connection lines (GREEN)
-    """
     H, W, _ = img.shape
     fig, ax = plt.subplots(figsize=(max(6, W / 60), max(6, H / 60)), dpi=150)
     ax.imshow(img)
@@ -352,7 +398,7 @@ def visualize_connections(img, segments, rows, out_path):
 
     # GREEN connection lines
     for (src_i, tgt_i, dist, sy, sx, ty, tx) in rows:
-        ax.plot([sx, tx], [sy, ty], linewidth=0.6, alpha=0.8, color="green")
+        ax.plot([sx, tx], [sy, ty], linewidth=1.8, alpha=1.0, color="green")
 
     ax.set_axis_off()
     fig.tight_layout(pad=0)
@@ -379,11 +425,10 @@ def process_single_image(img_path, out_dir, spacing_px, min_pixels, excluded_col
 
     base = safe_basename_no_ext(img_path)
 
-    masked_out = os.path.join(out_dir, f"{base}_masked.png")
-    imwrite_rgb(masked_out, masked)
-
     # Compute distances and write CSV + trailing average row
     rows = compute_nearest_object_distances(segments)
+    rows = remove_self_overlapping_lines(rows, segments, ignore_start_px=2) # removes self overlapping lines
+
     csv_out = os.path.join(out_dir, f"{base}_distances.csv")
 
     dists = [r[2] for r in rows]
@@ -427,10 +472,11 @@ def main():
     parser.add_argument("--spacing", type=float, default=16.0, help="Distance between sampled boundary points in pixels (default: 16.0).")
     parser.add_argument("--min-pixels", type=int, default=5, help="Minimum pixels for an object segment to be considered (default: 5).")
     parser.add_argument("--skip-patterns", default="_distances,_metrics,_masked", help="Comma-separated substrings; files containing any will be skipped (default: '_distances,_metrics,_masked').")
-    parser.add_argument("--occlusion-threshold", type=float, default=50.0, help="Occlusion threshold pct: objects with occlusion_pct >= this are excluded (default 50.0).")
+    parser.add_argument("--occlusion-threshold", type=float, default=0.0, help="Occlusion threshold pct: objects with occlusion_pct >= this are excluded (default 50.0).")
     parser.add_argument("--occlusion-color-tol", type=int, default=0, help="Color distance tolerance (Euclidean) used when comparing segment color to excluded colors (default 0 = exact match).")
     args = parser.parse_args()
 
+    print(f'calculating distance for {args.dataset_name}')
     base_dir = os.path.join("..", "data", "replica", args.dataset_name)
     input_dir = os.path.join(base_dir, "scene_groundtruths")
     out_dir = os.path.join(base_dir, "distance")
