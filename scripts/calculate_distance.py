@@ -171,6 +171,7 @@ def find_segments(img, min_pixels, spacing_px):
 
         boundary = extract_boundary_coords(mask)
         sampled = sample_points_along_chain(boundary, spacing_px)
+        sampled = snap_points_to_mask(sampled, mask, boundary_yx=boundary, max_snap_dist=5.0)
         if len(sampled) == 0:
             continue
 
@@ -190,8 +191,8 @@ def parse_view_from_filename(filename):
     m = SCENE_VIEW_RE.search(os.path.basename(filename))
     if not m:
         return None
-    return m.group(0)
-    # return (int(m.group(1)), int(m.group(2)))
+    # return m.group(0)
+    return (int(m.group(1)), int(m.group(2)))
 
 def load_colors_csv(colors_csv_path):
     mapping = {}
@@ -275,8 +276,6 @@ def compute_nearest_object_distances(segments):
     For EACH boundary point of EACH segment:
       connect to the nearest boundary point on ANY OTHER segment.
 
-    This guarantees every point gets a connection if there is at least
-    one other segment with boundary points.
     """
     if len(segments) < 2:
         return []
@@ -319,8 +318,6 @@ def compute_nearest_object_distances(segments):
             ty, tx = other_pts[int(idx)]
             rows.append((i, -1, float(dist), int(sy), int(sx), int(ty), int(tx)))
 
-    # NOTE: tgt_idx is set to -1 above because we didn't track target segment id.
-    # If you want target_obj/target_idx in the CSV, we can add it back cleanly.
     return rows
 
 
@@ -462,6 +459,58 @@ def process_single_image(img_path, out_dir, spacing_px, min_pixels, excluded_col
     return avg
 
 
+
+def snap_points_to_mask(sampled_yx, mask, boundary_yx=None, max_snap_dist=None, drop_if_fail=True):
+    if sampled_yx is None or len(sampled_yx) == 0:
+        return np.empty((0, 2), dtype=np.int32)
+
+    H, W = mask.shape
+    pts = sampled_yx.astype(np.int32)
+
+    # in-bounds first
+    inb = (pts[:, 0] >= 0) & (pts[:, 0] < H) & (pts[:, 1] >= 0) & (pts[:, 1] < W)
+    pts = pts[inb]
+    if len(pts) == 0:
+        return np.empty((0, 2), dtype=np.int32)
+
+    on = mask[pts[:, 0], pts[:, 1]]
+    if np.all(on):
+        return np.unique(pts, axis=0)
+
+    # choose snap targets
+    if boundary_yx is not None and len(boundary_yx) > 0:
+        targets = boundary_yx.astype(np.int32)
+    else:
+        ys, xs = np.nonzero(mask)
+        if len(ys) == 0:
+            return np.unique(pts[on], axis=0) if drop_if_fail else np.unique(pts, axis=0)
+        targets = np.stack([ys, xs], axis=1).astype(np.int32)
+
+    tree = cKDTree(targets[:, ::-1].astype(np.float64))  # (x,y)
+
+    bad_idx = np.nonzero(~on)[0]
+    bad_pts = pts[bad_idx]
+
+    dists, nn = tree.query(bad_pts[:, ::-1].astype(np.float64), k=1)
+    snapped = targets[nn.astype(np.int64)]
+
+    if max_snap_dist is not None:
+        keep = dists <= float(max_snap_dist)
+        bad_idx = bad_idx[keep]
+        snapped = snapped[keep]
+
+    pts_fixed = pts.copy()
+    if len(bad_idx) > 0:
+        pts_fixed[bad_idx] = snapped
+
+    # in-bounds and on-mask
+    inb2 = (pts_fixed[:, 0] >= 0) & (pts_fixed[:, 0] < H) & (pts_fixed[:, 1] >= 0) & (pts_fixed[:, 1] < W)
+    pts_fixed = pts_fixed[inb2]
+    pts_fixed = pts_fixed[mask[pts_fixed[:, 0], pts_fixed[:, 1]]]
+
+    return np.unique(pts_fixed.astype(np.int32), axis=0)
+
+
 # ----------------------------
 # Main
 # ----------------------------
@@ -472,11 +521,12 @@ def main():
     parser.add_argument("--spacing", type=float, default=16.0, help="Distance between sampled boundary points in pixels (default: 16.0).")
     parser.add_argument("--min-pixels", type=int, default=5, help="Minimum pixels for an object segment to be considered (default: 5).")
     parser.add_argument("--skip-patterns", default="_distances,_metrics,_masked", help="Comma-separated substrings; files containing any will be skipped (default: '_distances,_metrics,_masked').")
-    parser.add_argument("--occlusion-threshold", type=float, default=0.0, help="Occlusion threshold pct: objects with occlusion_pct >= this are excluded (default 50.0).")
+    parser.add_argument("--occlusion-threshold", type=float, default=70.0, help="Occlusion threshold pct: objects with occlusion_pct >= this are excluded (default 50.0).")
     parser.add_argument("--occlusion-color-tol", type=int, default=0, help="Color distance tolerance (Euclidean) used when comparing segment color to excluded colors (default 0 = exact match).")
     args = parser.parse_args()
 
     print(f'calculating distance for {args.dataset_name}')
+    # base_dir = os.path.join("..", "data", "replica", args.dataset_name)
     base_dir = os.path.join("..", "data", "replica", args.dataset_name)
     input_dir = os.path.join(base_dir, "scene_groundtruths")
     out_dir = os.path.join(base_dir, "distance")
@@ -515,7 +565,6 @@ def main():
 
         processed += 1
 
-        # if not math.isnan(avg_distance):
         view_avgs.append((view, avg_distance))
 
     # ---- write single summary CSV ----
@@ -526,7 +575,9 @@ def main():
         w.writerow(["viewpoint", "avg_distance"])
 
         for view, avg in view_avgs:
-            w.writerow([view, f"{avg:.3f}"])
+            # print(f'{view}')
+            th, ph = view
+            w.writerow([f"theta{th:03d}_phi{ph:03d}", f"{avg:.3f}"])
 
         # scene average (mean of per-view avgs)
         scene_avg = sum(a for _, a in view_avgs) / len(view_avgs)

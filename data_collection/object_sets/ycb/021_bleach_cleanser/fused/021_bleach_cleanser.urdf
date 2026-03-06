@@ -1,0 +1,24 @@
+<?xml version='1.0' encoding='ASCII'?>
+<robot name="021_bleach_cleanser">
+    <link name="object_021_bleach_cleanser_base_link">
+        <visual>
+            <origin rpy="0 0 0" xyz="0 0 0"/>
+            <geometry>
+                <mesh filename="obj/textured_simple.obj" scale="1.0 1.0 1.0"/>
+            </geometry>
+            <material name="texture">
+                <color rgba="1.0 1.0 1.0 1.0" />
+            </material>
+        </visual>
+        <collision>
+            <origin rpy="0 0 0" xyz="0 0 0"/>
+            <geometry>
+                <mesh filename="obj/textured_simple.obj" scale="1.0 1.0 1.0"/>
+            </geometry>
+        </collision>   
+        <inertial>
+            <mass value="1.1"/>
+            <inertia ixx="4.229684405548007e-06" ixy="3.421935898567749e-09" ixz="-2.4481498399868006e-07" iyy="4.561145478666602e-06" iyz="2.122805111110767e-09" izz="7.817030904616591e-07" />
+        </inertial>
+    </link>
+</robot>

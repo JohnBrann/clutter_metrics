@@ -10,25 +10,14 @@ import math
 from utils.perception import camera_on_sphere
 from experiment.simulation import ClutterRemovalSim
 from utils.transform import Rotation, Transform
-from utils.io import write_setup  # we do our own saver for the scene bundle
+from utils.io import write_setup 
 
-# ============================
-# Editable defaults (in code)
-# ============================
-# VIEW_THETAS_DEG = [0, 5, 10, 15, 20, 35, 30, 40, 45, 50, 55, 60, 65,70, 75, 80, 85, 90]   # elevation angles (degrees)
-R_FACTOR = 2.0                      # camera radius multiplier * sim.size
-PHI = -math.pi / 2                  # azimuth (radians)
+R_FACTOR =2.0                      
+PHI = -math.pi / 2                  
 BASE_PHI_RAD = -math.pi / 2
-# # AZIMUTH_OFFSETS_DEG = [0, 45, 90, 135, 180, 225, 270, 315 ]  # around in a circle degrees
-# AZIMUTH_OFFSETS_DEG = [0,5, 10, 15, 20, 25, 30,35, 40, 45, 50,55, 60,65, 70, 75, 80, 85, 90,95, 100,105, 110,115, 120,125,130,135,140,145,
-#                        150,155,160,165,170,175,180,185,190,195,200, 205,210,215,220,
-#                        230,235,240,245,250,255, 260,265, 270,275, 280,285,290,295, 300,305, 310,315, 320,325, 330,335, 340,354, 350, 355]
-EPS_THETA = 1e-3                    # small nudge to avoid degeneracy at 0 or pi
-
-
-THETA_STEP_DEG = 10
-AZIMUTH_STEP_DEG = 20
-
+EPS_THETA = 1e-3                  
+THETA_STEP_DEG = 45
+AZIMUTH_STEP_DEG = 45
 VIEW_THETAS_DEG = sorted(set(list(range(0, 90, THETA_STEP_DEG)) + [90]))
 
 # Generate azimuth offsets (0..359 by step). 360 is equivalent to 0 so we stop at 360 (exclusive).
@@ -47,13 +36,18 @@ def set_gui_camera_from_sphere(sim, r, theta, phi):
         cameraTargetPosition=[float(sim.size/2), float(sim.size/2), 0.0],
     )
 
-def extrinsics_to_spherical(T, center):
+def extrinsics_to_spherical(T, center, scene):
     """
     Given camera Transform T and scene center, return (r, theta, phi)
     with theta in [0, pi], phi in (-pi, pi], and their degree versions.
     """
     vec = T.translation - center
-    r = max(np.linalg.norm(vec), 1e-9)
+    if scene == "shelf":
+        r = 2.5
+    else:
+        r = 0.5
+        # r = max(np.linalg.norm(vec), 1e-9)
+
     theta = math.acos(max(min(vec[2]/r, 1.0), -1.0))  # polar angle from +Z
     phi = math.atan2(vec[1], vec[0])
     return r, theta, phi, np.degrees(theta), np.degrees(phi)
@@ -80,7 +74,7 @@ def generate_uid_color_lut(obj_uids):
     return colors
 
 # ----------------------------
-# Build extrinsics ONLY from in-code viewpoint list
+# Build extrinsics 
 # ----------------------------
 # def build_extrinsics(sim):
 #     """
@@ -111,6 +105,10 @@ def build_extrinsics(sim):
         for th_deg, th in zip(VIEW_THETAS_DEG, thetas):
             extrinsics.append(camera_on_sphere(origin, r, th, ph))
             theta_phi_pairs.append((th_deg, ph_deg))  # Store input degrees directly
+
+    print(f"R: {r}")
+    print(f"Theta, Phi:\n{theta_phi_pairs}")
+
 
     print(f"[info] Viewpoints: {len(phis)} azimuth(s) x {len(thetas)} elevation(s) "
           f"= {len(extrinsics)} total")
@@ -202,7 +200,7 @@ def discover_scene_bodies_verbose(world):
     return bodies, object_uids
 
 # ----------------------------
-# Segmentation decoding (PyBullet)
+# Segmentation decoding
 # ----------------------------
 def seg_uid_image(seg_img: np.ndarray) -> np.ndarray:
     """
@@ -217,7 +215,7 @@ def seg_uid_image(seg_img: np.ndarray) -> np.ndarray:
     return uid
 
 # ----------------------------
-# Visibility utils (no movement)
+# Visibility utils
 # ----------------------------
 def set_body_visibility(p, body_uid: int, visible: bool):
     """
@@ -277,14 +275,6 @@ def render_full_scene(sim, T):
     return depth_img, seg_img.astype(np.int32)
 
 def render_object_solo(sim, T, target_uid, all_body_uids, saved_poses):
-    """
-    Per-object solo render by moving occluding bodies far away:
-      1) move all non-target bodies to (10000, 10000, 10000)
-      2) render with only target in view (no occlusion!)
-      3) return binary mask + UID-labeled mask for target
-    
-    Note: Caller restores poses after this function returns.
-    """
     p = sim.world.p
     world = sim.world
 
@@ -325,7 +315,7 @@ def render_object_solo(sim, T, target_uid, all_body_uids, saved_poses):
 def main():
     parser = argparse.ArgumentParser()
     # parser.add_argument("--root", type=Path, default=Path("labeled_data"))
-    parser.add_argument("--scene", type=str, choices=["pile", "packed", "replica"], default="pile")
+    parser.add_argument("--scene", type=str, choices=["pile", "packed", "replica", "shelf"], default="pile")
     parser.add_argument("--object-set", type=str, default="blocks")
     parser.add_argument("--sim-gui", action="store_true")
     parser.add_argument("--delay", type=float, default=0.0,
@@ -334,9 +324,8 @@ def main():
                         help="Idle after the tour so the GUI stays open.")
     parser.add_argument("--remove-box", action="store_true",
                         help="remove the box from the scene or not")
-    parser.add_argument(
-        "--replica-scene-id",type=str,
-        default="",help="Scene key from replica JSON (e.g. scene_1)")
+    parser.add_argument("--replica-scene-id",type=str,
+        default="1",help="")
 
     args = parser.parse_args()
 
@@ -357,17 +346,23 @@ def main():
         out_dir,
         sim.size,
         sim.camera.intrinsic,
-        sim.gripper.max_opening_width,
-        sim.gripper.finger_depth,
     )
 
     # Build one cluttered scene and settle
-    object_count = 8
+    object_count = 5
     sim.reset(object_count)
 
-    # --- Build extrinsics ONLY from the in-code list ---
     extrinsics, theta_phi_pairs = build_extrinsics(sim)
+    extrinsics_xyz = [list(t.translation) for t in extrinsics]
+    # print(f'extrinsics:\n {extrinsics_xyz}')
 
+
+    for i, (th_deg, ph_deg) in enumerate(theta_phi_pairs):
+        if ph_deg == 0:
+            x, y, z = extrinsics[i].translation
+            # print(f"(theta,phi)=({th_deg:03d},{ph_deg:03d}) -> x={x:.6f}, y={y:.6f}, z={z:.6f}")
+
+    # print(f'extrinsics: {extrinsics}')
     center = np.array([sim.size/2, sim.size/2, sim.size/3])
 
     # Discover bodies/objects once (constant for the scene)
@@ -403,17 +398,15 @@ def main():
     # ---------- Per-VIEWPOINT loop ----------
     for i, T in enumerate(extrinsics):
         # Sync GUI camera and compute angles from the actual transform
-        # r, theta, phi, th_deg, ph_deg = extrinsics_to_spherical(T, center)
+        cam_pos = T.translation
         th_deg, ph_deg = theta_phi_pairs[i]
-        # if sim.gui:
-        #     set_gui_camera_from_sphere(sim, r, theta, phi)
         if sim.gui:
-            r, theta, phi, _, _ = extrinsics_to_spherical(T, center)
+            r, theta, phi, _, _ = extrinsics_to_spherical(T, center, args.scene)
             set_gui_camera_from_sphere(sim, r, theta, phi)
         view_theta_deg[i] = th_deg
         view_phi_deg[i] = ph_deg
 
-        # --- Step 1: ALL VISIBLE, render full scene ---
+        #  render full scene ---
         set_all_bodies_visibility(sim.world, True)
         d_full, seg_full = render_full_scene(sim, T)
         depth_imgs[i] = d_full
@@ -425,7 +418,7 @@ def main():
         all_body_uids = list(sim.world.bodies.keys())
         saved_poses = save_body_poses(sim.world.p, all_body_uids)
 
-        # --- Step 2: per-object solo renders (removes non-targets for clean masks) ---
+        #  per-object solo renders (removes non-targets for clean masks) ---
         for j, uid in enumerate(obj_uids):
             # Restore all body poses before rendering each object
             restore_body_poses(sim.world.p, saved_poses)

@@ -1,0 +1,27 @@
+<?xml version="0.0" ?>
+<robot name="shelf2.urdf">
+  <link concave="yes" name="base_link">
+    <inertial>
+      <mass value="0.0"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+    </inertial>
+    <visual>
+      <origin rpy="1.5707963 0 0"/>
+      <geometry>
+        <mesh filename="shelf2.obj" scale="0.009 0.006 0.009"/>
+      </geometry>
+      <material name="white">
+        <color rgba="1 1 1 1"/>
+      </material>
+    </visual>
+    <collision concave="yes">
+      <origin rpy="1.5707963 0 0"/>
+      <geometry>
+        <mesh filename="shelf2.obj" scale="0.009 0.006 0.009"/>
+      </geometry>
+    </collision>
+    <contact>
+      <lateral_friction value="1.0"/>
+    </contact>
+  </link>
+</robot>

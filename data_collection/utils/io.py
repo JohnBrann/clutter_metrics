@@ -9,7 +9,7 @@ from utils.perception import *
 from utils.transform import Rotation, Transform
 
 
-def write_setup(root, size, intrinsic, max_opening_width, finger_depth):
+def write_setup(root, size, intrinsic):
     data = {
         "size": size,
         "intrinsic": intrinsic.to_dict(),

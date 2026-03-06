@@ -1,0 +1,24 @@
+<?xml version='1.0' encoding='ASCII'?>
+<robot name="052_extra_large_clamp">
+    <link name="object_052_extra_large_clamp_base_link">
+        <visual>
+            <origin rpy="0 0 0" xyz="0 0 0"/>
+            <geometry>
+                <mesh filename="obj/textured_simple.obj" scale="1.0 1.0 1.0"/>
+            </geometry>
+            <material name="texture">
+                <color rgba="1.0 1.0 1.0 1.0" />
+            </material>
+        </visual>
+        <collision>
+            <origin rpy="0 0 0" xyz="0 0 0"/>
+            <geometry>
+                <mesh filename="obj/textured_simple.obj" scale="1.0 1.0 1.0"/>
+            </geometry>
+        </collision>   
+        <inertial>
+            <mass value="0.12"/>
+            <inertia ixx="1.7830604577696732e-07" ixy="-1.542878961516919e-08" ixz="1.66853173692912e-10" iyy="2.987621440575797e-07" iyz="-1.2103960617806044e-09" izz="4.606992986407701e-07" />
+        </inertial>
+    </link>
+</robot>

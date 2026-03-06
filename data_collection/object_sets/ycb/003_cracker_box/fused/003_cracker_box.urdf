@@ -1,0 +1,24 @@
+<?xml version='1.0' encoding='ASCII'?>
+<robot name="003_cracker_box">
+    <link name="object_003_cracker_box_base_link">
+        <visual>
+            <origin rpy="0 0 0" xyz="0 0 0"/>
+            <geometry>
+                <mesh filename="obj/textured_simple.obj" scale="1.0 1.0 1.0"/>
+            </geometry>
+            <material name="texture">
+                <color rgba="1.0 1.0 1.0 1.0" />
+            </material>
+        </visual>
+        <collision>
+            <origin rpy="0 0 0" xyz="0 0 0"/>
+            <geometry>
+                <mesh filename="obj/textured_simple.obj" scale="1.0 1.0 1.0"/>
+            </geometry>
+        </collision>   
+        <inertial>
+            <mass value="0.41"/>
+            <inertia ixx="1.265938357166301e-05" ixy="-2.528890444258794e-09" ixz="8.072173384241724e-08" iyy="8.890007581614652e-06" iyz="2.871852483967249e-08" izz="5.2816017871259786e-06" />
+        </inertial>
+    </link>
+</robot>

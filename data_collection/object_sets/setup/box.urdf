@@ -8,7 +8,7 @@
     <visual>
       <origin rpy="1.5707963 0 0"/>
       <geometry>
-        <mesh filename="box.obj" scale="0.01 0.005 0.01"/>
+        <mesh filename="box.obj" scale="0.0125 0.005 0.0125"/>
       </geometry>
       <material name="white">
         <color rgba="1 1 1 1"/>
@@ -17,7 +17,7 @@
     <collision concave="yes">
       <origin rpy="1.5707963 0 0"/>
       <geometry>
-        <mesh filename="box.obj" scale="0.01 0.005 0.01"/>
+        <mesh filename="box.obj" scale="0.0125 0.005 0.0125"/>
       </geometry>
     </collision>
   </link>

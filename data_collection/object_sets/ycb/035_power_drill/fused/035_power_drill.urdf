@@ -1,0 +1,24 @@
+<?xml version='1.0' encoding='ASCII'?>
+<robot name="035_power_drill">
+    <link name="object_035_power_drill_base_link">
+        <visual>
+            <origin rpy="0 0 0" xyz="0 0 0"/>
+            <geometry>
+                <mesh filename="obj/textured_simple.obj" scale="1.0 1.0 1.0"/>
+            </geometry>
+            <material name="texture">
+                <color rgba="1.0 1.0 1.0 1.0" />
+            </material>
+        </visual>
+        <collision>
+            <origin rpy="0 0 0" xyz="0 0 0"/>
+            <geometry>
+                <mesh filename="obj/textured_simple.obj" scale="1.0 1.0 1.0"/>
+            </geometry>
+        </collision>   
+        <inertial>
+            <mass value="0.612"/>
+            <inertia ixx="2.3129704697063717e-06" ixy="2.3885483599418095e-07" ixz="1.8341838669983577e-08" iyy="1.8341838669983577e-08" iyz="4.6798166861969844e-08" izz="3.0984842946282334e-06" />
+        </inertial>
+    </link>
+</robot>

@@ -160,16 +160,16 @@ def main():
 
     import matplotlib as mpl
     cmap = mpl.cm.get_cmap('viridis').reversed()
-    im = ax_heat.imshow(grid, aspect='auto', origin='lower', vmin=0, vmax=100,
+    im = ax_heat.imshow(grid, aspect='auto', origin='lower', vmin=0, vmax=62,
                         cmap=cmap, interpolation='nearest')
     ax_heat.invert_yaxis()
 
     cbar = plt.colorbar(im, ax=ax_heat, label="Occlusion (%)", fraction=0.045, pad=0.02)
     cbar.ax.tick_params(labelsize=CBAR_FS)
 
-    ax_heat.set_title("Per-view average occlusion (theta rows, phi cols)", fontsize=SMALL_TITLE_FS)
-    ax_heat.set_xlabel("phi (deg)", fontsize=SMALL_TITLE_FS)
-    ax_heat.set_ylabel("theta (deg)", fontsize=SMALL_TITLE_FS)
+    ax_heat.set_title("Per-view average occlusion", fontsize=SMALL_TITLE_FS)
+    ax_heat.set_xlabel("phi", fontsize=SMALL_TITLE_FS)
+    ax_heat.set_ylabel("theta", fontsize=SMALL_TITLE_FS)
 
     if len(phis_arr) > 0:
         ax_heat.set_xticks(np.arange(len(phis_arr)))

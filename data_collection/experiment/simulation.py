@@ -17,7 +17,7 @@ import json
 
 class ClutterRemovalSim(object):
     def __init__(self, scene, object_set, gui=True, seed=None, add_noise=False, sideview=False, save_dir=None, save_freq=8, remove_box=True, replica_scene_id=0):
-        assert scene in ["pile", "packed", "real_packed","real_pile", "replica"]
+        assert scene in ["pile", "packed", "replica", "shelf"]
 
         self.urdf_root = Path("object_sets")
         self.scene = scene
@@ -38,8 +38,11 @@ class ClutterRemovalSim(object):
 
         self.rng = np.random.RandomState(seed) if seed else np.random
         self.world = btsim.BtWorld(self.gui, save_dir, save_freq)
-        self.gripper = Gripper(self.world)
-        self.size = 6 * self.gripper.finger_depth
+        # self.gripper = Gripper(self.world)
+        # self.size = 6 * self.gripper.finger_depth
+        self.size = 6 * 0.05
+        if self.scene == "shelf":
+            self.size = 0.5
         # intrinsic = CameraIntrinsic(640, 480, 540.0, 540.0, 320.0, 240.0)
         self.intrinsic = CameraIntrinsic(848, 480, 426.678, 426.67822265625, 427.2525634765625, 234.44296264648438)
         self.camera = self.world.add_camera(self.intrinsic, 0.1, 2.0)
@@ -57,11 +60,12 @@ class ClutterRemovalSim(object):
      # Discovers objects in the structure expected from MOAD datasets
     def discover_objects(self):
         root = self.urdf_root / self.object_set
+        print(f'root: {root}')
         self.object_urdfs = sorted(
             (p for p in root.glob("*/fused/*.urdf") if p.is_file()),
             key=lambda p: p.stem
         )
-        print(f'{self.object_urdfs}')
+        print(f'Discoverted Objects: {self.object_urdfs}')
 
     def save_state(self):
         self._snapshot_id = self.world.save_state()
@@ -72,7 +76,7 @@ class ClutterRemovalSim(object):
     def reset(self, object_count):
         self.world.reset()
         self.world.set_gravity([0.0, 0.0, -9.81])
-        self.draw_workspace()
+        # self.draw_workspace()
 
         if self.gui:
             self.world.p.resetDebugVisualizerCamera(
@@ -82,7 +86,7 @@ class ClutterRemovalSim(object):
                 cameraTargetPosition=[0.15, 0.50, -0.3],
             )
 
-        table_height = self.gripper.finger_depth
+        table_height = 0.01
         self.place_table(table_height)
 
         if self.scene == "pile":
@@ -92,6 +96,8 @@ class ClutterRemovalSim(object):
         elif self.scene == "replica":
             replica_scene_path = Path("scene_replica_scenes") / "scenes"
             self.generate_replica_scene(table_height, self.replica_scene_id, replica_scene_path)
+        elif self.scene == "shelf":
+            self.generate_shelf_scene(object_count, table_height)
         else:
             raise ValueError("Invalid scene argument")
 
@@ -143,6 +149,7 @@ class ClutterRemovalSim(object):
         
         # save pos and quaternion of each object to a json file
         self.save_poses_to_json()
+        self.save_poses_to_npz()
 
 
     def generate_packed_scene(self, object_count, table_height):
@@ -170,6 +177,10 @@ class ClutterRemovalSim(object):
                 self.restore_state()
             else:
                 self.remove_and_wait()
+
+           
+            # self.remove_and_wait()
+
             attempts += 1
 
         self.wait_for_objects_to_rest(timeout=3.0)
@@ -179,12 +190,16 @@ class ClutterRemovalSim(object):
         #     {'x': 0, 'y': 0, 'angle': 0.0, 'scale': 1.0},
         #     {'x': 0.3, 'y': 0.3, 'angle': 0.0, 'scale': 1.0},
         #     {'x': 0, 'y': 0.3, 'angle': 0.0, 'scale': 1.0},
+        #     {'x': 0.15, 'y': 0.15, 'angle': 0.0, 'scale': 1.0},
+        #     {'x': 0.05, 'y': 0.05, 'angle': 0.0, 'scale': 1.0},
+        #     {'x': 0.25, 'y': 0.25, 'angle': 0.0, 'scale': 1.0},
+        #     {'x': 0.05, 'y': 0.15, 'angle': 0.0, 'scale': 1.0},
         # ]
 
         # # positions = [
         # #     {'x': 0, 'y': 0, 'angle': 0.0, 'scale': 1.0},
         # # ]
-        # test_urdf = self.object_urdfs[5]
+        # test_urdf = self.object_urdfs[0]
 
         # for pos in positions:
         #     urdf = test_urdf
@@ -206,52 +221,137 @@ class ClutterRemovalSim(object):
 
         # save pos and quaternion of each object to a json file
         self.save_poses_to_json()
+        self.save_poses_to_npz()
 
 
-    def generate_replica_scene(self, table_height, scene_number, replica_scene_path=1, scale=1.0):
+    def generate_replica_scene(self, table_height, scene_number, replica_scene_path):
         # Get scene data
         full_scene_path = Path(replica_scene_path) / f"{scene_number}.npz"
         data = np.load(full_scene_path, allow_pickle=True)
-        print(f'data: {data}')
 
-        model_names_all = data["model_names"]
-        poses_all = data["poses"]  # [x, y, z, qx, qy, qz, q]
+        model_names = data["model_names"] 
+        print(f'Model Names: {model_names}')
+        # EX. Model Names: ['040_large_marker' '010_potted_meat_can' '006_mustard_bottle' '004_sugar_box' '035_power_drill']
 
-        # Index into the requested scene (works for either multi-scene or single-scene)
-        model_names = model_names_all[scene_number] if model_names_all.ndim == 2 else model_names_all
-        poses = poses_all[scene_number] if poses_all.ndim == 3 else poses_all
+        poses = data["poses"]  # [x, y, z, qx, qy, qz, qw]
+        print(f'Poses: {poses}')
         
-        # extracts the end of each model name path so we can use it to match the obejct names in the .npz file
+        # Extracts the end of each model name path so we can use it to match the object names in the .npz file
         urdf_by_name = {p.stem: p for p in self.object_urdfs}
-        
-        # place objects
-        # spawned = []
+        print(f'urdfs : {urdf_by_name}')
+
+        # Place objects
         for model_name, pose7 in zip(model_names, poses):
-            # Map model name -> urdf path
             urdf = urdf_by_name[model_name]
+            print(f'urdf: {urdf}')
+            # EX. urdf: object_sets/ycb/040_large_marker/fused/040_large_marker.urdf
             
             x_, y_, z, qx, qy, qz, qw = pose7
             x = x_ + 0.15
             y = y_ + 0.15
-            rot = Rotation.from_quat([qx, qy, qz, qw])  # scipy expects [x, y, z, w]
+            rot = Rotation.from_quat([qx, qy, qz, qw])
 
-            # Load at recorded pose
+            # Load object
             pose = Transform(rot, np.r_[x, y, z])
-            body = self.world.load_urdf(urdf, pose, scale=self.global_scaling * scale)
+            body = self.world.load_urdf(urdf, pose, scale=1.3)
 
-            # Adjust z so it sits on the table (keep your existing behavior)
+            # Adjust z so object sits on the table
             lower, upper = self.world.p.getAABB(body.uid)
             z_on_table = table_height + 0.5 * (upper[2] - lower[2]) + 0.002
             body.set_pose(pose=Transform(rot, np.r_[x, y, z_on_table]))
 
             self.world.step()
             self.wait_for_objects_to_rest(timeout=3.0)
-            # spawned.append(body)
 
         self.wait_for_objects_to_rest(timeout=3.0)
-        self.save_poses_to_json()
-        # return spawned
+       
 
+    def generate_shelf_scene(self, object_count, table_height):
+        urdf = self.urdf_root / "setup" / "shelf4.urdf"
+        pose = Transform(Rotation.identity(), np.r_[0.21, 0.21, table_height])
+        shelf1 = self.world.load_urdf(urdf, pose, scale=1.3)
+
+        # manually placeing objects on shelf
+        positions = [
+            {'x': 0.1, 'y': 0.1, 'z': 0.3, 'angle': 0.0, 'scale': 1.0, 'urdf': 1},
+            {'x': 0.3, 'y': 0.1, 'z': 0.1, 'angle': 0.0, 'scale': 1.0, 'urdf': 10},
+            {'x': 0.1, 'y': 0.25, 'z': 0.3, 'angle': 0.0, 'scale': 1.0, 'urdf': 14},
+            {'x': 0.25, 'y': 0.2, 'z': 0.3, 'angle': 0.0, 'scale': 1.0, 'urdf': 4},
+            {'x': 0.25, 'y': 0.2, 'z': 0.3, 'angle': 0.0, 'scale': 1.0, 'urdf': 4},
+            {'x': 0.25, 'y': 0.22, 'z': 0.1, 'angle': 0.0, 'scale': 1.0, 'urdf': 4},
+            {'x': 0.35, 'y': 0.2, 'z': 0.3, 'angle': 0.0, 'scale': 1.0, 'urdf': 4},
+            {'x': 0.35, 'y': 0.12, 'z': 0.3, 'angle': 0.0, 'scale': 1.0, 'urdf': 1},
+            {'x': 0.1, 'y': 0.1, 'z': 0.1, 'angle': 0.0, 'scale': 1.0, 'urdf': 3},
+            {'x': 0.1, 'y': 0.2, 'z': 0.1, 'angle': 0.0, 'scale': 1.0, 'urdf': 7},
+            {'x': 0.3, 'y': 0.25, 'z': 0.1, 'angle': 0.0, 'scale': 1.0, 'urdf': 14},
+        ]
+
+        for pos in positions:
+            urdf = self.object_urdfs[pos['urdf']]
+            x, y, z = pos['x'], pos['y'], pos['z']
+            angle = pos.get('angle', 0.0)
+            scale = pos.get('scale', 1.0)
+            
+            rotation = Rotation.from_rotvec(angle * np.r_[0.0, 0.0, 1.0])
+            # rotation = Rotation.random(random_state=self.rng)
+            pose = Transform(rotation, np.r_[x, y, z])
+            body = self.world.load_urdf(urdf, pose, scale=self.global_scaling * scale)
+            
+            lower, upper = self.world.p.getAABB(body.uid)
+            # z = table_height + 0.5 * (upper[2] - lower[2]) + 0.002
+            body.set_pose(pose=Transform(rotation, np.r_[x, y, z]))
+            self.world.step()
+            self.wait_for_objects_to_rest(timeout=3.0)
+
+        # save pos and quaternion of each object to a json file
+        self.save_poses_to_json()
+        self.save_poses_to_npz()
+
+
+    def save_poses_to_npz(self, path="scene_poses.npz"):
+        """
+        Save current world object poses to NPZ.
+        Stores:
+        - ids:        (N,)   int
+        - poses:      (N,7)  float  [x,y,z,qx,qy,qz,qw]  (PyBullet quat is xyzw)
+        - model_names:(N,)   str    (should match urdf_by_name keys, e.g. urdf Path.stem)
+        """
+        ids = []
+        poses = []
+        model_names = []
+
+        for uid, body in list(self.world.bodies.items()):
+            
+            uid_i = int(uid)
+            if uid_i == 0:
+                print("[info] skipping plane (uid=0)")
+                continue
+            pos, orn = self.world.p.getBasePositionAndOrientation(uid_i)
+
+            name = getattr(body, "name", "") or ""
+            name_stem = Path(name).stem if name else ""
+         
+            ids.append(uid_i)
+            poses.append([
+                float(pos[0]-0.15), float(pos[1]-0.15), float(pos[2]),
+                float(orn[0]), float(orn[1]), float(orn[2]), float(orn[3])
+            ])
+            model_names.append(name_stem)
+
+            # print(f"[info] saved uid={uid_i} name='{name_stem}' "
+            #     f"pos={[float(pos[0]), float(pos[1]), float(pos[2])]} "
+            #     f"quat={[float(orn[0]), float(orn[1]), float(orn[2]), float(orn[3])]}")
+        
+
+        ids = np.asarray(ids, dtype=np.int32)
+        poses = np.asarray(poses, dtype=np.float32)
+
+        # Store as unicode strings (best for npz). If you truly need arbitrary python
+        # objects, you can store dtype=object instead.
+        model_names = np.asarray(model_names, dtype=np.str_)
+
+        np.savez(path, ids=ids, poses=poses, model_names=model_names)
+        print(f"[info] scene saved to {path}")
 
     
     def save_poses_to_json(self, path="scene_poses.json"):
@@ -296,7 +396,7 @@ class ClutterRemovalSim(object):
         # texture_id = world.p.loadTexture('/home/pinhao/Desktop/GIGA/texture_0.jpg')
         self.world.reset()
         self.world.set_gravity([0.0, 0.0, -9.81])
-        self.draw_workspace()
+        # self.draw_workspace()
 
         if self.gui:
             self.world.p.resetDebugVisualizerCamera(
@@ -316,85 +416,6 @@ class ClutterRemovalSim(object):
             # body.set_pose(pose=pose)
             self.world.step()
 
-
-    def execute_grasp(self, grasp, remove=True, allow_contact=True):
-        T_world_grasp = grasp.pose
-        T_grasp_pregrasp = Transform(Rotation.identity(), [0.0, 0.0, -0.05])
-        T_world_pregrasp = T_world_grasp * T_grasp_pregrasp
-        approach = T_world_grasp.rotation.as_matrix()[:, 2]
-        angle = np.arccos(np.dot(approach, np.r_[0.0, 0.0, -1.0]))
-        if angle > np.pi / 3.0:
-            # side grasp, lift the object after establishing a grasp
-            T_grasp_pregrasp_world = Transform(Rotation.identity(), [0.0, 0.0, 0.2])
-            T_world_retreat = T_grasp_pregrasp_world * T_world_grasp
-        else:
-            T_grasp_retreat = Transform(Rotation.identity(), [0.0, 0.0, -0.2])
-            T_world_retreat = T_world_grasp * T_grasp_retreat
-
-        # self.gripper.reset(T_world_pregrasp, opening_width=grasp.width)
-        self.gripper.reset(T_world_pregrasp)
-        #time.sleep(1)
-        #print('calculate pregrasp',T_world_pregrasp.translation)
-        #print('world pregrasp',self.gripper.body.get_pose().translation)
-        if self.gripper.detect_contact():
-            result = Label.FAILURE, self.gripper.max_opening_width, 'pregrasp'
-            return result
-            #print('pregrasp contact')
-            #time.sleep(3)
-        else:
-            #print('non contact')
-            self.gripper.move_tcp_xyz(T_world_grasp, abort_on_contact=False)
-            if self.gripper.detect_contact() and not allow_contact:
-                result = Label.FAILURE, self.gripper.max_opening_width, 'grasp'
-                quick_act = False
-                if quick_act:
-                    self.gripper.move(0.0)
-                    self.advance_sim(10)
-                    # need some time to check grasp or not, if this time is too short, failure of grasp is considered as drop
-                    self.advance_sim(30)
-                    if self.check_success(self.gripper):
-                        dis_from_hand = self.gripper.get_distance_from_hand()
-                        self.gripper.move_tcp_xyz(T_world_retreat, abort_on_contact=False)
-                        self.gripper.move_gripper_top_down()
-                        shake_label = False
-                        if self.check_success(self.gripper):
-                            shake_label = self.gripper.shake_hand(dis_from_hand)
-                            # print('finish shaking')
-                        if self.check_success(self.gripper) and shake_label:
-                            result = Label.SUCCESS, self.gripper.read(), 'success'
-                        else:
-                            result = Label.FAILURE, self.gripper.max_opening_width, 'after'
-                        if remove:
-                            contacts = self.world.get_contacts(self.gripper.body)
-                            self.world.remove_body(contacts[0].bodyB)
-                    else:
-                        result = Label.FAILURE, self.gripper.max_opening_width, 'grasp'
-            else:
-                self.gripper.move(0.0)
-                self.advance_sim(10)
-                if self.check_success(self.gripper):
-                    dis_from_hand = self.gripper.get_distance_from_hand()
-                    self.gripper.move_tcp_xyz(T_world_retreat, abort_on_contact=False)
-                    self.gripper.move_gripper_top_down()
-                    shake_label = False
-                    if self.check_success(self.gripper):
-                        shake_label = self.gripper.shake_hand(dis_from_hand)
-                        #print('finish shaking')
-                    if self.check_success(self.gripper) and shake_label:
-                        result = Label.SUCCESS, self.gripper.read(),'success'
-                        if remove:
-                            contacts = self.world.get_contacts(self.gripper.body)
-                            self.world.remove_body(contacts[0].bodyB)
-                    else:
-                        result =  Label.FAILURE, self.gripper.max_opening_width, 'after'
-                else:
-                    result = Label.FAILURE, self.gripper.max_opening_width, 'after'
-        self.world.remove_body(self.gripper.body)
-        if remove:
-            self.remove_and_wait()
-        return result[:2]
-    
-    
     def advance_sim(self,frames):
         for _ in range(frames):
             self.world.step()
@@ -428,12 +449,6 @@ class ClutterRemovalSim(object):
                 self.world.remove_body(body)
                 removed_object = True
         return removed_object
-
-    def check_success(self, gripper):
-        # check that the fingers are in contact with some object and not fully closed
-        contacts = self.world.get_contacts(gripper.body)
-        res = len(contacts) > 0 and gripper.read() > 0.1 * gripper.max_opening_width
-        return res
     
 
     def idle(self, hz=240):

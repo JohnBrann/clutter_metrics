@@ -2,10 +2,13 @@ import os
 from pathlib import Path
 import mplcursors
 import matplotlib.pyplot as plt
+import csv
+import math 
 
 
 REPLICA_ROOT = Path("../data/replica")
 REL_CSV_PATH = Path("occlusion") / "occlusion_summary.csv"
+OUTPUT_CSV = Path("occlusion_mnet_all_scene_avg.csv")
 
 
 def collect_occlusion_data(root: Path = REPLICA_ROOT, rel_csv: Path = REL_CSV_PATH):
@@ -25,39 +28,58 @@ def collect_occlusion_data(root: Path = REPLICA_ROOT, rel_csv: Path = REL_CSV_PA
 
         csv_path = scene_dir / rel_csv
         if not csv_path.exists():
-            # Uncomment if you want to see what's missing:
-            # print(f"Missing: {csv_path}")
             continue
 
         lines = csv_path.read_text(encoding="utf-8", errors="replace").splitlines()
 
-        last = None
-        for line in reversed(lines):
+        # Collect all numeric occlusion values (skip header)
+        occlusions = []
+        for line in lines:
             line = line.strip()
-            if line and not line.lower().startswith("viewpoint,"):
-                last = line
-                break
+            if not line or line.lower().startswith("viewpoint,") or line.lower().startswith("full_scene,"):
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            try:
+                occlusions.append(float(parts[-1]))
+            except ValueError:
+                continue
 
-        if not last:
-            print(f"Skipping {csv_path} (no data lines)")
+        if not occlusions:
+            print(f"Skipping {csv_path} (no valid data lines)")
             continue
 
-        parts = [p.strip() for p in last.split(",")]
-        try:
-            occlusion = float(parts[-1])
-        except ValueError:
-            print(f"Skipping {csv_path} (bad last line: {last!r})")
-            continue
+        # ---- Summary statistics ----
+        occlusions.sort()
 
-        results.append((scene_number, occlusion))
+        min_o = occlusions[0]
+        max_o = occlusions[-1]
+        avg_o = sum(occlusions) / len(occlusions)
+
+        # Median (NEW)
+        n = len(occlusions)
+        if n % 2 == 1:
+            median_o = occlusions[n // 2]
+        else:
+            median_o = (occlusions[n // 2 - 1] + occlusions[n // 2]) / 2.0
+
+        # Population standard deviation
+        var = sum((o - avg_o) ** 2 for o in occlusions) / n
+        std_o = math.sqrt(var)
+
+        results.append((
+            scene_number,
+            round(min_o, 2),
+            round(median_o, 2),
+            round(max_o, 2),
+            round(std_o, 2),
+            round(avg_o, 2),
+        ))
 
     results.sort(key=lambda x: x[0])
     return results
 
 
-
 def plot_information(scene_occlusions):
-
     if not scene_occlusions:
         print("No occlusion data found to plot.")
         return
@@ -66,7 +88,9 @@ def plot_information(scene_occlusions):
     med_scenes, med_occ = [], []
     hard_scenes, hard_occ = [], []
 
-    for scene, occ in scene_occlusions:
+    # Use average for plotting 
+    for scene, min_o, median_o, max_o, std_o, avg_o in scene_occlusions:
+        occ = avg_o
         if scene < 100:
             easy_scenes.append(scene)
             easy_occ.append(occ)
@@ -79,26 +103,23 @@ def plot_information(scene_occlusions):
 
     fig, ax = plt.subplots()
 
-    # Difficulty bands
     ax.axvspan(0, 99, alpha=0.08)
     ax.axvspan(100, 199, alpha=0.08)
     ax.axvspan(200, 299, alpha=0.08)
 
-    # Scatter plots
     sc_easy = ax.scatter(easy_scenes, easy_occ, label="easy (0–99)", s=30)
     sc_med  = ax.scatter(med_scenes, med_occ, label="medium (100–199)", s=30)
     sc_hard = ax.scatter(hard_scenes, hard_occ, label="hard (200–299)", s=30)
 
-    ax.set_title("SceneReplica Occlusion Score")
+    ax.set_title("Occlusion Scores Per ManipulationNet Scene")
     ax.set_xlabel("Scene number")
-    ax.set_ylabel("Occlusion (%)")
+    ax.set_ylabel("Avg Occlusion (%)")
 
-    ax.set_ylim(0, 100)
+    ax.set_ylim(0, 50)
 
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
     ax.legend(frameon=False)
 
-    # ---- Hover tooltips ----
     cursor = mplcursors.cursor([sc_easy, sc_med, sc_hard], hover=True)
 
     @cursor.connect("add")
@@ -109,8 +130,31 @@ def plot_information(scene_occlusions):
     plt.tight_layout()
     plt.show()
 
+
+def save_to_csv(scene_occlusion, output_path: Path = OUTPUT_CSV):
+    if not scene_occlusion:
+        print("No data to save.")
+        return
+
+    with output_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "scene_number",
+            "min_occlusion",
+            "median_occlusion",
+            "max_occlusion",
+            "std_dev",
+            "avg_occlusion"
+        ])
+        for scene, min_o, median_o, max_o, std_o, avg_o in scene_occlusion:
+            writer.writerow([scene, min_o, median_o, max_o, std_o, avg_o])
+
+    print(f"Saved {len(scene_occlusion)} rows to {output_path}")
+
+
 def main():
     data = collect_occlusion_data()
+    save_to_csv(data)
     plot_information(data)
 
 
