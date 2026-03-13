@@ -160,7 +160,18 @@ def main():
 
     import matplotlib as mpl
     cmap = mpl.cm.get_cmap('viridis')
-    im = ax_heat.imshow(grid, aspect='auto', origin='lower', vmin=0, vmax=84,
+    
+    # get the maximum value, excluding the nan values
+    valid_vals = grid[~np.isnan(grid)]
+    if valid_vals.size > 0:
+        max_proximity = np.max(valid_vals)
+        vmax = int(np.ceil(max_proximity / 10.0) * 10)
+        if vmax == max_proximity:
+            vmax += 10
+    else:
+        vmax = 10
+
+    im = ax_heat.imshow(grid, aspect='auto', origin='lower', vmin=0, vmax=vmax,
                         cmap=cmap, interpolation='nearest')
     ax_heat.invert_yaxis()
 
