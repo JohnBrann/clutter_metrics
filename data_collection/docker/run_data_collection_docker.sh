@@ -4,14 +4,14 @@ xhost +local:docker
 
 docker run -it --rm --gpus all \
   --net=host \
-  -v "$HOME/clutter_quantification:/clutter_quantification:rw" \
+  -v "$HOME/clutter_metrics:/clutter_metrics:rw" \
   -v "/tmp/.X11-unix:/tmp/.X11-unix:rw" \
   -e DISPLAY="$DISPLAY" \
-  --workdir /clutter_quantification \
-  clutter_quantification \
+  --workdir /clutter_metrics \
+  clutter_metrics \
   bash -lc '
-    source /opt/conda/etc/profile.d/conda.sh && conda activate clutter_quantification
-    export PYTHONPATH="/clutter_quantification/src:$PYTHONPATH";
+    source /opt/conda/etc/profile.d/conda.sh && conda activate clutter_metrics
+    export PYTHONPATH="/clutter_metrics/src:$PYTHONPATH";
     cd data_collection && python convonet_setup.py build_ext --inplace;
     exec bash
   '

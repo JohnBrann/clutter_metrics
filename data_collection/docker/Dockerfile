@@ -23,9 +23,9 @@ RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkg
     conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 
 # Create env and make it the default
-RUN conda create -y -n grasp-data-collection python=3.8 && conda clean -afy
-ENV CONDA_DEFAULT_ENV=grasp-data-collection
-ENV PATH=/opt/conda/envs/grasp-data-collection/bin:$PATH
+RUN conda create -y -n clutter-metrics python=3.8 && conda clean -afy
+ENV CONDA_DEFAULT_ENV=clutter-metrics
+ENV PATH=/opt/conda/envs/clutter-metrics/bin:$PATH
 
 # (Optional) copy reqs if you want; we’ll still pin our known-good stack after
 COPY requirements.txt /tmp/requirements.txt
@@ -50,10 +50,10 @@ RUN pip install --no-cache-dir torch_geometric==2.6.1 \
 # Make ROS + conda env available in non-interactive shells too
 SHELL ["/bin/bash", "-lc"]
 RUN echo 'source /opt/ros/noetic/setup.bash' >> /etc/bash.bashrc \
- && echo 'source /opt/conda/etc/profile.d/conda.sh && conda activate grasp-data-collection' >> /etc/bash.bashrc
+ && echo 'source /opt/conda/etc/profile.d/conda.sh && conda activate clutter-metrics' >> /etc/bash.bashrc
 
 # Workdir (mounted at runtime)
-WORKDIR /grasp-data-collection
+WORKDIR /clutter-metrics
 
 # Handy envs for X11 (optional but often helps)
 ENV QT_X11_NO_MITSHM=1
@@ -61,7 +61,7 @@ ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,video,graphics,display
 
 # ensure we’re installing into the conda env
-ENV PATH=/opt/conda/envs/grasp-data-collection/bin:$PATH
+ENV PATH=/opt/conda/envs/clutter-metrics/bin:$PATH
 
 # build deps for convonet_setup.py
 RUN python -m pip install --no-cache-dir "Cython>=0.29" pybind11 cmake ninja "numpy<2.0"
