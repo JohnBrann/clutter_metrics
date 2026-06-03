@@ -311,8 +311,8 @@ def resolve_scene_root(dataset_name: str) -> str:
     if os.path.exists(dataset_name):
         return dataset_name
 
-    # Case 2: old layout: ./data/<dataset_name>
-    p_old = os.path.join(".", "data", dataset_name)
+    # Case 2: old layout: ./scenes/<dataset_name>
+    p_old = os.path.join(".", "scenes", dataset_name)
     if os.path.exists(p_old):
         return p_old
 
@@ -440,7 +440,7 @@ def main():
         # final overall row
         writer.writerow(["full_scene", f"{overall_avg:.6f}"])
 
-    # print(f"CSV written to: {csv_path}")
+
 
     # Use fieldnames matching the dict keys produced in per_object_rows
     if all_per_object_rows:
@@ -459,6 +459,17 @@ def main():
             print(f"[error] failed to write per-object CSV {per_object_csv_path}: {e}")
     else:
         print("[info] No per-object rows to write to per_object_occlusion.csv")
+
+    
+    # Write scene occlusion to seperate "metrics file"
+    metrics_dir = os.path.dirname(out_dir)  # one level up from occlusion/
+    metrics_csv_path = os.path.join(metrics_dir, "metrics.csv")
+
+    with open(metrics_csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["metric", "value"])
+        writer.writerow(["avg_occlusion", f"{overall_avg:.6f}"])
+
 
 if __name__ == "__main__":
     main()

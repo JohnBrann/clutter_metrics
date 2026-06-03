@@ -1,0 +1,18 @@
+# Scene Configuration
+# scene_type options: packed, piled
+scene_type: pile
+scene_name: "3"
+
+# Object Parameters
+object_set: moad # name of folder of objects_sets (objects_sets/<folder_name>)
+num_objects: [5,7]
+allow_duplicate_objects: True
+list_of_objects:
+  - atb1_gear-large
+  - atb2_round-pulley-small
+  - atb3_flat-mount
+
+# Boundary Parameters
+boundary_shape: circle       # options: circle, bin
+boundary_radius: [0.1, 0.3]
+remove_boundary: True        # set False to keep containing bin throughout data collection

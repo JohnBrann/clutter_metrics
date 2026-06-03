@@ -16,15 +16,25 @@ import json
 
 
 class ClutterRemovalSim(object):
-    def __init__(self, scene, object_set, gui=True, seed=None, add_noise=False, sideview=False, save_dir=None, save_freq=8, remove_box=True, replica_scene_id=0):
+    # def __init__(self, scene, object_set, gui=True, seed=None, add_noise=False, sideview=False, save_dir=None, save_freq=8, remove_box=True, replica_scene_id=0):
+    def __init__(self, scene, object_set, scene_name, number_of_objects=5, allow_duplicate_objects=False, list_of_objects=[], gui=True, seed=None, save_dir=None, save_freq=8, boundary_type="circle", boundary_radius = 0.2, remove_boundary=True, replica_scene_id=0):
         assert scene in ["pile", "packed", "replica", "shelf"]
 
-        self.urdf_root = Path("object_sets")
         self.scene = scene
-        self.object_set = object_set
-        self.replica_scene_id = replica_scene_id
-        self.discover_objects()
+        self.scene_name = scene_name
+        self.urdf_root = Path("object_sets")
 
+        # Object Parameters
+        self.object_set = object_set
+        self.number_of_objects = number_of_objects
+        self.allow_duplicate_objects = allow_duplicate_objects
+        self.list_of_objects = list_of_objects
+
+        self.replica_scene_id = replica_scene_id
+        self.discover_objects() # make this read from my list of objects
+
+
+        ###################################### FIX in here later
         self.global_scaling = {
             "blocks": 1.67,
             "google": 0.7,
@@ -33,21 +43,25 @@ class ClutterRemovalSim(object):
             
         }.get(object_set, 1.0)
         self.gui = gui
-        self.add_noise = add_noise
-        self.sideview = sideview
 
         self.rng = np.random.RandomState(seed) if seed else np.random
+        
         self.world = btsim.BtWorld(self.gui, save_dir, save_freq)
         # self.gripper = Gripper(self.world)
         # self.size = 6 * self.gripper.finger_depth
         self.size = 6 * 0.05
         if self.scene == "shelf":
             self.size = 0.5
+        
         # intrinsic = CameraIntrinsic(640, 480, 540.0, 540.0, 320.0, 240.0)
         self.intrinsic = CameraIntrinsic(848, 480, 426.678, 426.67822265625, 427.2525634765625, 234.44296264648438)
         self.camera = self.world.add_camera(self.intrinsic, 0.1, 2.0)
+        ######################################## 
 
-        self.remove_box = remove_box
+        # Boundary Parameters
+        self.boundary_type = boundary_type
+        self.boundary_radius = boundary_radius
+        self.remove_boundary = remove_boundary
 
     @property
     def num_objects(self):
@@ -57,7 +71,7 @@ class ClutterRemovalSim(object):
     #     root = self.urdf_root / self.object_set
     #     self.object_urdfs = [f for f in root.iterdir() if f.suffix == ".urdf"]
 
-     # Discovers objects in the structure expected from MOAD datasets
+    # Discovers objects in the structure expected from MOAD datasets
     def discover_objects(self):
         root = self.urdf_root / self.object_set
         print(f'root: {root}')
@@ -65,7 +79,63 @@ class ClutterRemovalSim(object):
             (p for p in root.glob("*/fused/*.urdf") if p.is_file()),
             key=lambda p: p.stem
         )
-        print(f'Discoverted Objects: {self.object_urdfs}')
+        print(f'Discovered Objects: {self.object_urdfs}')
+
+
+    # Determines objects to be used in scene given scene parameteres. Considers all parameters and returns a list of object
+    def determine_objects(self):
+        # build eligible pool of object (looks at what discoverable and what we specified)
+        if self.list_of_objects:
+            # filter discovered URDFs to only those whose stem is in the allowlist
+            pool = [p for p in self.object_urdfs if p.stem in self.list_of_objects]
+            if not pool:
+                raise ValueError(
+                    f"None of the requested objects {self.list_of_objects} were found "
+                    f"among discovered URDFs. Check your object names."
+                )
+        else:
+            pool = list(self.object_urdfs)
+
+        if not pool:
+            raise RuntimeError("No objects available. Did you call discover_objects() first?")
+
+        # Sample objects from available pool of objects
+        if self.allow_duplicate_objects:
+            # sample with replacement — same object can appear multiple times
+            objects = [self.rng.choice(pool) for _ in range(self.number_of_objects)]
+        else:
+            if self.number_of_objects > len(pool):
+                raise ValueError(
+                    f"Requested {self.number_of_objects} unique objects but only "
+                    f"{len(pool)} are available. Set allow_duplicate_objects=True "
+                    f"or reduce number_of_objects."
+                )
+            # sample without replacement — each object appears at most once
+            indices = self.rng.choice(len(pool), size=self.number_of_objects, replace=False)
+            objects = [pool[i] for i in indices]
+
+        return objects
+
+
+
+    def load_assets(self):
+        self.urdf_models = glob.glob(
+            os.path.join(self.object_model_path, "**/model.urdf")
+        )
+        folders = sorted(
+            set(os.path.basename(os.path.dirname(f)) for f in self.urdf_models)
+        )
+        for folder in folders:
+            urdf_path = os.path.join(self.object_model_path, folder, "model.urdf")
+
+            # canonical key
+            self.model_lib[folder] = urdf_path
+
+            if "_" in folder and folder.split("_", 1)[0].isdigit():
+                npz_key = folder.split("_", 1)[1]
+                self.model_lib[npz_key] = urdf_path
+
+        self.scene_layouts = glob.glob(os.path.join(self.scene_path, "*.npz"))
 
     def save_state(self):
         self._snapshot_id = self.world.save_state()
@@ -86,7 +156,7 @@ class ClutterRemovalSim(object):
                 cameraTargetPosition=[0.15, 0.50, -0.3],
             )
 
-        table_height = 0.01
+        table_height = 0.000
         self.place_table(table_height)
 
         if self.scene == "pile":
@@ -111,7 +181,7 @@ class ClutterRemovalSim(object):
 
     def place_table(self, height):
         urdf = self.urdf_root / "setup" / "plane.urdf"
-        pose = Transform(Rotation.identity(), [0.15, 0.15, height])
+        pose = Transform(Rotation.identity(), [0.0, 0.0, height])
         self.world.load_urdf(urdf, pose, scale=0.6)
 
         # define valid volume for sampling grasps
@@ -123,101 +193,164 @@ class ClutterRemovalSim(object):
         self.newlower = np.r_[lx, ly, nlz]
         self.upper = np.r_[ux, uy, uz]
 
-    def generate_pile_scene(self, object_count, table_height):
-        # place box
-        urdf = self.urdf_root / "setup" / "box.urdf"
-        pose = Transform(Rotation.identity(), np.r_[0.02, 0.02, table_height])
-        box = self.world.load_urdf(urdf, pose, scale=1.3)
 
-        # drop objects
-        urdfs = self.rng.choice(self.object_urdfs, size=object_count)
+    def _create_boundary(self, center, table_height, half_extents=0.2, wall_height=0.1, wall_thickness=0.005):
+        cx, cy = center
+        h = wall_height / 2.0
+        t = wall_thickness / 2.0
+        e = half_extents
+        z = table_height + h
+        color = [0.5, 0.5, 0.5, 0.5]
+
+        wall_ids = []
+
+        if self.boundary_type == "bin":
+            walls = [
+                ( e,  0,  t,  e),
+                (-e,  0,  t,  e),
+                ( 0,  e,  e,  t),
+                ( 0, -e,  e,  t),
+            ]
+            for dx, dy, hx, hy in walls:
+                col = self.world.p.createCollisionShape(
+                    self.world.p.GEOM_BOX, halfExtents=[hx, hy, h])
+                vis = self.world.p.createVisualShape(
+                    self.world.p.GEOM_BOX, halfExtents=[hx, hy, h], rgbaColor=color)
+                uid = self.world.p.createMultiBody(
+                    baseMass=0,
+                    baseCollisionShapeIndex=col,
+                    baseVisualShapeIndex=vis,
+                    basePosition=[cx + dx, cy + dy, z]
+                )
+                wall_ids.append(uid)
+
+        elif self.boundary_type == "circle":
+            num_segs = 32
+            radius = half_extents
+            for i in range(num_segs):
+                angle_start = (2 * np.pi * i)       / num_segs
+                angle_end   = (2 * np.pi * (i + 1)) / num_segs
+                angle_mid   = (angle_start + angle_end) / 2.0
+
+                seg_cx = cx + radius * np.cos(angle_mid)
+                seg_cy = cy + radius * np.sin(angle_mid)
+
+                chord = 2 * radius * np.sin(np.pi / num_segs)
+                hx = chord / 2.0
+                hy = t
+
+                # quat = self.world.p.getQuaternionFromEuler([0, 0, angle_mid])
+                quat = self.world.p.getQuaternionFromEuler([0, 0, angle_mid + np.pi / 2])
+
+                col = self.world.p.createCollisionShape(
+                    self.world.p.GEOM_BOX, halfExtents=[hx, hy, h])
+                vis = self.world.p.createVisualShape(
+                    self.world.p.GEOM_BOX, halfExtents=[hx, hy, h], rgbaColor=color)
+                uid = self.world.p.createMultiBody(
+                    baseMass=0,
+                    baseCollisionShapeIndex=col,
+                    baseVisualShapeIndex=vis,
+                    basePosition=[seg_cx, seg_cy, z],
+                    baseOrientation=quat
+                )
+                wall_ids.append(uid)
+
+        return wall_ids
+
+    def generate_pile_scene(self, object_count, table_height):
+        # Create workspace boundary that keeps objects dropped in close to each other
+        boundary_ids = self._create_boundary(
+            center=(0.0, 0.0),
+            table_height=table_height,
+            half_extents=0.15,
+        )
+
+        # determine objects for this scene (determine_objects takes into consideration the scene parameters and returns a list of objects that will be spawned)
+        urdfs = self.determine_objects()
+        print(f'Objects being used: {urdfs}')
+
         for urdf in urdfs:
             rotation = Rotation.random(random_state=self.rng)
-            xy = self.rng.uniform(1.0 / 3.0 * self.size, 2.0 / 3.0 * self.size, 2)
-            # print(f'{urdf} xy: {xy}')
-            pose = Transform(rotation, np.r_[xy, table_height + 0.2])
+            xy = self.rng.uniform(-0.05, 0.05, 2)
+            pose = Transform(rotation, np.r_[xy, table_height + 0.1])
             scale = self.rng.uniform(1.0, 1.0)
             self.world.load_urdf(urdf, pose, scale=self.global_scaling * scale)
             self.wait_for_objects_to_rest(timeout=3.0)
 
-        # remove box
-        if self.remove_box == True:
-            self.world.remove_body(box)
-            self.remove_and_wait()
+        # remove boundary
+        if self.remove_boundary == True:
+             for uid in boundary_ids:
+                self.world.p.removeBody(uid)
 
         self.wait_for_objects_to_rest(timeout=3.0)
-        
-        # save pos and quaternion of each object to a json file
-        self.save_poses_to_json()
+    
         self.save_poses_to_npz()
 
 
     def generate_packed_scene(self, object_count, table_height):
-        attempts = 0
-        max_attempts = 12
+        # attempts = 0
+        # max_attempts = 12
 
-        while self.num_objects < object_count and attempts < max_attempts:
-            self.save_state()
-            urdf = self.rng.choice(self.object_urdfs)
-            x = self.rng.uniform(0.08, 0.22)
-            y = self.rng.uniform(0.08, 0.22)
-            z = 1.0
-            angle = self.rng.uniform(0.0, 2.0 * np.pi)
-            rotation = Rotation.from_rotvec(angle * np.r_[0.0, 0.0, 1.0])
-            pose = Transform(rotation, np.r_[x, y, z])
-            scale = self.rng.uniform(0.7, 0.9)
-            body = self.world.load_urdf(urdf, pose, scale=self.global_scaling * scale)
-            lower, upper = self.world.p.getAABB(body.uid)
-            z = table_height + 0.5 * (upper[2] - lower[2]) + 0.002
-            body.set_pose(pose=Transform(rotation, np.r_[x, y, z]))
-            self.world.step()
-
-            if self.world.get_contacts(body):
-                self.world.remove_body(body)
-                self.restore_state()
-            else:
-                self.remove_and_wait()
-
-           
-            # self.remove_and_wait()
-
-            attempts += 1
-
-        self.wait_for_objects_to_rest(timeout=3.0)
-        
-        # positions = [
-        #     {'x': 0.3, 'y': 0, 'angle': 0.0, 'scale': 1.0},
-        #     {'x': 0, 'y': 0, 'angle': 0.0, 'scale': 1.0},
-        #     {'x': 0.3, 'y': 0.3, 'angle': 0.0, 'scale': 1.0},
-        #     {'x': 0, 'y': 0.3, 'angle': 0.0, 'scale': 1.0},
-        #     {'x': 0.15, 'y': 0.15, 'angle': 0.0, 'scale': 1.0},
-        #     {'x': 0.05, 'y': 0.05, 'angle': 0.0, 'scale': 1.0},
-        #     {'x': 0.25, 'y': 0.25, 'angle': 0.0, 'scale': 1.0},
-        #     {'x': 0.05, 'y': 0.15, 'angle': 0.0, 'scale': 1.0},
-        # ]
-
-        # # positions = [
-        # #     {'x': 0, 'y': 0, 'angle': 0.0, 'scale': 1.0},
-        # # ]
-        # test_urdf = self.object_urdfs[0]
-
-        # for pos in positions:
-        #     urdf = test_urdf
-        #     x, y = pos['x'], pos['y']
-        #     angle = pos.get('angle', 0.0)
-        #     scale = pos.get('scale', 1.0)
-            
+        # while self.num_objects < object_count and attempts < max_attempts:
+        #     self.save_state()
+        #     urdf = self.rng.choice(self.object_urdfs)
+        #     x = self.rng.uniform(0.08, 0.22)
+        #     y = self.rng.uniform(0.08, 0.22)
         #     z = 1.0
-        #     # rotation = Rotation.from_rotvec(angle * np.r_[0.0, 0.0, 1.0])
-        #     rotation = Rotation.random(random_state=self.rng)
+        #     angle = self.rng.uniform(0.0, 2.0 * np.pi)
+        #     rotation = Rotation.from_rotvec(angle * np.r_[0.0, 0.0, 1.0])
         #     pose = Transform(rotation, np.r_[x, y, z])
+        #     scale = self.rng.uniform(0.7, 0.9)
         #     body = self.world.load_urdf(urdf, pose, scale=self.global_scaling * scale)
-            
         #     lower, upper = self.world.p.getAABB(body.uid)
         #     z = table_height + 0.5 * (upper[2] - lower[2]) + 0.002
         #     body.set_pose(pose=Transform(rotation, np.r_[x, y, z]))
         #     self.world.step()
-        #     self.wait_for_objects_to_rest(timeout=3.0)
+
+        #     if self.world.get_contacts(body):
+        #         self.world.remove_body(body)
+        #         self.restore_state()
+        #     else:
+        #         self.remove_and_wait()
+
+           
+        #     # self.remove_and_wait()
+
+        #     attempts += 1
+
+        # self.wait_for_objects_to_rest(timeout=3.0)
+        
+        positions = [
+            {'x': 0.0, 'y': 0.0, 'angle': 1.0, 'scale': 1.0, 'object': 2},
+            {'x': 0.0, 'y': -0.1, 'angle': 1.0, 'scale': 1.0, 'object': 2},
+            {'x': 0.1, 'y': 0.0, 'angle': 0.0, 'scale': 1.0, 'object': 0},
+            {'x': 0.0, 'y': 0.1, 'angle': 0.0, 'scale': 1.0, 'object': 1},
+            {'x': -0.1, 'y': 0.0, 'angle': 0.0, 'scale': 1.0, 'object': 0},
+        ]
+
+        # positions = [
+        #     {'x': 0, 'y': 0, 'angle': 0.0, 'scale': 1.0},
+        # ]
+        # test_urdf = self.object_urdfs[0]
+
+        for pos in positions:
+            urdf = self.object_urdfs[pos['object']]
+            x, y = pos['x'], pos['y']
+            # angle = pos.get('angle', 0.0)
+            scale = pos.get('scale', 1.0)
+            
+            z = 1.0
+            rotation = Rotation.from_rotvec(np.pi/2 * np.r_[pos['angle'], 0.0, 0.0])
+            # rotation = Rotation.random(random_state=self.rng)
+            pose = Transform(rotation, np.r_[x, y, z])
+            body = self.world.load_urdf(urdf, pose, scale=self.global_scaling * scale)
+            
+            lower, upper = self.world.p.getAABB(body.uid)
+            z = table_height + 0.5 * (upper[2] - lower[2]) + 0.0
+            # z = table_height + 0.002
+            body.set_pose(pose=Transform(rotation, np.r_[x, y, z]))
+            # self.world.step()
+            # self.wait_for_objects_to_rest(timeout=3.0)
 
         # save pos and quaternion of each object to a json file
         self.save_poses_to_json()
@@ -308,7 +441,7 @@ class ClutterRemovalSim(object):
         self.save_poses_to_npz()
 
 
-    def save_poses_to_npz(self, path="scene_poses.npz"):
+    def save_poses_to_npz(self):
         """
         Save current world object poses to NPZ.
         Stores:
@@ -333,27 +466,21 @@ class ClutterRemovalSim(object):
          
             ids.append(uid_i)
             poses.append([
-                float(pos[0]-0.15), float(pos[1]-0.15), float(pos[2]),
+                float(pos[0]), float(pos[1]), float(pos[2]),
                 float(orn[0]), float(orn[1]), float(orn[2]), float(orn[3])
             ])
             model_names.append(name_stem)
-
-            # print(f"[info] saved uid={uid_i} name='{name_stem}' "
-            #     f"pos={[float(pos[0]), float(pos[1]), float(pos[2])]} "
-            #     f"quat={[float(orn[0]), float(orn[1]), float(orn[2]), float(orn[3])]}")
         
-
         ids = np.asarray(ids, dtype=np.int32)
         poses = np.asarray(poses, dtype=np.float32)
-
-        # Store as unicode strings (best for npz). If you truly need arbitrary python
-        # objects, you can store dtype=object instead.
         model_names = np.asarray(model_names, dtype=np.str_)
 
+        path = f"../scenes/{self.scene_name}/scene_replica.npz"
         np.savez(path, ids=ids, poses=poses, model_names=model_names)
         print(f"[info] scene saved to {path}")
 
     
+    # Not needed, remove
     def save_poses_to_json(self, path="scene_poses.json"):
         """
         Save current world object poses to JSON.
@@ -392,33 +519,33 @@ class ClutterRemovalSim(object):
 
 
 
-    def recovered_scene(self, mesh_list):
-        # texture_id = world.p.loadTexture('/home/pinhao/Desktop/GIGA/texture_0.jpg')
-        self.world.reset()
-        self.world.set_gravity([0.0, 0.0, -9.81])
-        # self.draw_workspace()
+    # def recovered_scene(self, mesh_list):
+    #     # texture_id = world.p.loadTexture('/home/pinhao/Desktop/GIGA/texture_0.jpg')
+    #     self.world.reset()
+    #     self.world.set_gravity([0.0, 0.0, -9.81])
+    #     # self.draw_workspace()
 
-        if self.gui:
-            self.world.p.resetDebugVisualizerCamera(
-                cameraDistance=1.0,
-                cameraYaw=0.0,
-                cameraPitch=-45,
-                cameraTargetPosition=[0.15, 0.50, -0.3],
-            )
+    #     if self.gui:
+    #         self.world.p.resetDebugVisualizerCamera(
+    #             cameraDistance=1.0,
+    #             cameraYaw=0.0,
+    #             cameraPitch=-45,
+    #             cameraTargetPosition=[0.15, 0.50, -0.3],
+    #         )
 
-        table_height = self.gripper.finger_depth
-        self.place_table(table_height)
-        for (mesh_path, scale, pose) in mesh_list:
-            pose = Transform.from_matrix(pose)
-            mesh_path = '_'.join(mesh_path.split('_')[:-1])+'.urdf'
-            body = self.world.load_urdf(mesh_path, pose, scale=self.global_scaling * scale)
-            lower, upper = self.world.p.getAABB(body.uid)
-            # body.set_pose(pose=pose)
-            self.world.step()
+    #     table_height = self.gripper.finger_depth
+    #     self.place_table(table_height)
+    #     for (mesh_path, scale, pose) in mesh_list:
+    #         pose = Transform.from_matrix(pose)
+    #         mesh_path = '_'.join(mesh_path.split('_')[:-1])+'.urdf'
+    #         body = self.world.load_urdf(mesh_path, pose, scale=self.global_scaling * scale)
+    #         lower, upper = self.world.p.getAABB(body.uid)
+    #         # body.set_pose(pose=pose)
+    #         self.world.step()
 
-    def advance_sim(self,frames):
-        for _ in range(frames):
-            self.world.step()
+    # def advance_sim(self,frames):
+    #     for _ in range(frames):
+    #         self.world.step()
 
     def remove_and_wait(self):
         # wait for objects to rest while removing bodies that fell outside the workspace
@@ -463,183 +590,183 @@ class ClutterRemovalSim(object):
             pass
 
 
-class Gripper(object):
-    """Simulated Panda hand."""
+# class Gripper(object):
+#     """Simulated Panda hand."""
 
-    def __init__(self, world):
-        self.world = world
-        self.urdf_path = Path("object_sets/panda/hand.urdf")
+#     def __init__(self, world):
+#         self.world = world
+#         self.urdf_path = Path("object_sets/panda/hand.urdf")
 
-        self.max_opening_width = 0.08
-        self.finger_depth = 0.05
-        self.T_body_tcp = Transform(Rotation.identity(), [0.0, 0.0, 0.022])
-        self.T_tcp_body = self.T_body_tcp.inverse()
+#         self.max_opening_width = 0.08
+#         self.finger_depth = 0.05
+#         self.T_body_tcp = Transform(Rotation.identity(), [0.0, 0.0, 0.022])
+#         self.T_tcp_body = self.T_body_tcp.inverse()
 
-    def reset(self, T_world_tcp):
-        T_world_body = T_world_tcp * self.T_tcp_body
-        self.body = self.world.load_urdf(self.urdf_path, T_world_body)
-        self.body.set_pose(T_world_body)  # sets the position of the COM, not URDF link
-        self.constraint = self.world.add_constraint(
-            self.body,
-            None,
-            None,
-            None,
-            pybullet.JOINT_FIXED,
-            [0.0, 0.0, 0.0],
-            Transform.identity(),
-            T_world_body,
-        )
-        self.update_tcp_constraint(T_world_tcp)
-        # constraint to keep fingers centered
-        self.world.add_constraint(
-            self.body,
-            self.body.links["panda_leftfinger"],
-            self.body,
-            self.body.links["panda_rightfinger"],
-            pybullet.JOINT_GEAR,
-            [1.0, 0.0, 0.0],
-            Transform.identity(),
-            Transform.identity(),
-        ).change(gearRatio=-1, erp=0.1, maxForce=50)
-        self.joint1 = self.body.joints["panda_finger_joint1"]
-        self.joint1.set_position(0.5 * self.max_opening_width, kinematics=True)
-        self.joint2 = self.body.joints["panda_finger_joint2"]
-        self.joint2.set_position(0.5 * self.max_opening_width, kinematics=True)
+#     def reset(self, T_world_tcp):
+#         T_world_body = T_world_tcp * self.T_tcp_body
+#         self.body = self.world.load_urdf(self.urdf_path, T_world_body)
+#         self.body.set_pose(T_world_body)  # sets the position of the COM, not URDF link
+#         self.constraint = self.world.add_constraint(
+#             self.body,
+#             None,
+#             None,
+#             None,
+#             pybullet.JOINT_FIXED,
+#             [0.0, 0.0, 0.0],
+#             Transform.identity(),
+#             T_world_body,
+#         )
+#         self.update_tcp_constraint(T_world_tcp)
+#         # constraint to keep fingers centered
+#         self.world.add_constraint(
+#             self.body,
+#             self.body.links["panda_leftfinger"],
+#             self.body,
+#             self.body.links["panda_rightfinger"],
+#             pybullet.JOINT_GEAR,
+#             [1.0, 0.0, 0.0],
+#             Transform.identity(),
+#             Transform.identity(),
+#         ).change(gearRatio=-1, erp=0.1, maxForce=50)
+#         self.joint1 = self.body.joints["panda_finger_joint1"]
+#         self.joint1.set_position(0.5 * self.max_opening_width, kinematics=True)
+#         self.joint2 = self.body.joints["panda_finger_joint2"]
+#         self.joint2.set_position(0.5 * self.max_opening_width, kinematics=True)
 
-    def update_tcp_constraint(self, T_world_tcp):
-        T_world_body = T_world_tcp * self.T_tcp_body
-        self.constraint.change(
-            jointChildPivot=T_world_body.translation,
-            jointChildFrameOrientation=T_world_body.rotation.as_quat(),
-            maxForce=300,
-        )
-    def grasp_object_id(self):
-        contacts = self.world.get_contacts(self.body)
-        for contact in contacts:
-            # contact = contacts[0]
-            # get rid body
-            grased_id = contact.bodyB
-            if grased_id.uid!=self.body.uid:
-                return grased_id.uid
+#     def update_tcp_constraint(self, T_world_tcp):
+#         T_world_body = T_world_tcp * self.T_tcp_body
+#         self.constraint.change(
+#             jointChildPivot=T_world_body.translation,
+#             jointChildFrameOrientation=T_world_body.rotation.as_quat(),
+#             maxForce=300,
+#         )
+#     def grasp_object_id(self):
+#         contacts = self.world.get_contacts(self.body)
+#         for contact in contacts:
+#             # contact = contacts[0]
+#             # get rid body
+#             grased_id = contact.bodyB
+#             if grased_id.uid!=self.body.uid:
+#                 return grased_id.uid
             
-    def get_distance_from_hand(self,):
-        object_id = self.grasp_object_id()
-        pos, _ = pybullet.getBasePositionAndOrientation(object_id)
-        dist_from_hand = np.linalg.norm(np.array(pos) - np.array(self.body.get_pose().translation))
-        return dist_from_hand
-    def set_tcp(self, T_world_tcp):
-        T_word_body = T_world_tcp * self.T_tcp_body
-        self.body.set_pose(T_word_body)
-        self.update_tcp_constraint(T_world_tcp)
+#     def get_distance_from_hand(self,):
+#         object_id = self.grasp_object_id()
+#         pos, _ = pybullet.getBasePositionAndOrientation(object_id)
+#         dist_from_hand = np.linalg.norm(np.array(pos) - np.array(self.body.get_pose().translation))
+#         return dist_from_hand
+#     def set_tcp(self, T_world_tcp):
+#         T_word_body = T_world_tcp * self.T_tcp_body
+#         self.body.set_pose(T_word_body)
+#         self.update_tcp_constraint(T_world_tcp)
 
-    def move_tcp_xyz(self, target, eef_step=0.002, vel=0.10, abort_on_contact=True):
-        T_world_body = self.body.get_pose()
-        T_world_tcp = T_world_body * self.T_body_tcp
+#     def move_tcp_xyz(self, target, eef_step=0.002, vel=0.10, abort_on_contact=True):
+#         T_world_body = self.body.get_pose()
+#         T_world_tcp = T_world_body * self.T_body_tcp
 
-        diff = target.translation - T_world_tcp.translation
-        n_steps = int(np.linalg.norm(diff) / eef_step)
-        dist_step = diff / n_steps
-        dur_step = np.linalg.norm(dist_step) / vel
+#         diff = target.translation - T_world_tcp.translation
+#         n_steps = int(np.linalg.norm(diff) / eef_step)
+#         dist_step = diff / n_steps
+#         dur_step = np.linalg.norm(dist_step) / vel
 
-        for _ in range(n_steps):
-            T_world_tcp.translation += dist_step
-            self.update_tcp_constraint(T_world_tcp)
-            for _ in range(int(dur_step / self.world.dt)):
-                self.world.step()
-            if abort_on_contact and self.detect_contact():
-                return
+#         for _ in range(n_steps):
+#             T_world_tcp.translation += dist_step
+#             self.update_tcp_constraint(T_world_tcp)
+#             for _ in range(int(dur_step / self.world.dt)):
+#                 self.world.step()
+#             if abort_on_contact and self.detect_contact():
+#                 return
 
-    def detect_contact(self, threshold=5):
-        if self.world.get_contacts(self.body):
-            return True
-        else:
-            return False
+#     def detect_contact(self, threshold=5):
+#         if self.world.get_contacts(self.body):
+#             return True
+#         else:
+#             return False
 
-    def move(self, width):
-        self.joint1.set_position(0.5 * width)
-        self.joint2.set_position(0.5 * width)
-        for _ in range(int(0.5 / self.world.dt)):
-            self.world.step()
+#     def move(self, width):
+#         self.joint1.set_position(0.5 * width)
+#         self.joint2.set_position(0.5 * width)
+#         for _ in range(int(0.5 / self.world.dt)):
+#             self.world.step()
 
-    def read(self):
-        width = self.joint1.get_position() + self.joint2.get_position()
-        return width
+#     def read(self):
+#         width = self.joint1.get_position() + self.joint2.get_position()
+#         return width
     
-    def move_gripper_top_down(self):
-        current_pose = self.body.get_pose()
-        pos = current_pose.translation + 0.1
-        flip = Rotation.from_euler('y', np.pi)
-        target_ori = Rotation.identity()*flip
-        self.move_tcp_pose(Transform(rotation=target_ori,translation=pos),abs=True)
+#     def move_gripper_top_down(self):
+#         current_pose = self.body.get_pose()
+#         pos = current_pose.translation + 0.1
+#         flip = Rotation.from_euler('y', np.pi)
+#         target_ori = Rotation.identity()*flip
+#         self.move_tcp_pose(Transform(rotation=target_ori,translation=pos),abs=True)
     
-    def move_tcp_pose(self, target, eef_step1=0.002, vel1=0.10, abs=False):
-        T_world_body = self.body.get_pose()
-        T_world_tcp = T_world_body * self.T_body_tcp
-        pos_diff = target.translation - T_world_tcp.translation
-        n_steps = max(int(np.linalg.norm(pos_diff) / eef_step1),10)
-        dist_step = pos_diff / n_steps
-        dur_step = np.linalg.norm(dist_step) / vel1
-        key_rots = np.stack((T_world_body.rotation.as_quat(),target.rotation.as_quat()),axis=0)
-        key_rots = Rotation.from_quat(key_rots)
-        slerp = Slerp([0.0,1.0],key_rots)
-        times = np.linspace(0,1,n_steps)
-        orientations = slerp(times).as_quat()
-        for ii in range(n_steps):
-            T_world_tcp.translation += dist_step
-            T_world_tcp.rotation = Rotation.from_quat(orientations[ii])
-            if abs is True:
-                # todo by haojie add the relation transformation later
-                self.constraint.change(
-                    jointChildPivot=T_world_tcp.translation,
-                    jointChildFrameOrientation=T_world_tcp.rotation.as_quat(),
-                    maxForce=300,
-                )
-            else:
-                self.update_tcp_constraint(T_world_tcp)
-            for _ in range(int(dur_step / self.world.dt)):
-                self.world.step()
+#     def move_tcp_pose(self, target, eef_step1=0.002, vel1=0.10, abs=False):
+#         T_world_body = self.body.get_pose()
+#         T_world_tcp = T_world_body * self.T_body_tcp
+#         pos_diff = target.translation - T_world_tcp.translation
+#         n_steps = max(int(np.linalg.norm(pos_diff) / eef_step1),10)
+#         dist_step = pos_diff / n_steps
+#         dur_step = np.linalg.norm(dist_step) / vel1
+#         key_rots = np.stack((T_world_body.rotation.as_quat(),target.rotation.as_quat()),axis=0)
+#         key_rots = Rotation.from_quat(key_rots)
+#         slerp = Slerp([0.0,1.0],key_rots)
+#         times = np.linspace(0,1,n_steps)
+#         orientations = slerp(times).as_quat()
+#         for ii in range(n_steps):
+#             T_world_tcp.translation += dist_step
+#             T_world_tcp.rotation = Rotation.from_quat(orientations[ii])
+#             if abs is True:
+#                 # todo by haojie add the relation transformation later
+#                 self.constraint.change(
+#                     jointChildPivot=T_world_tcp.translation,
+#                     jointChildFrameOrientation=T_world_tcp.rotation.as_quat(),
+#                     maxForce=300,
+#                 )
+#             else:
+#                 self.update_tcp_constraint(T_world_tcp)
+#             for _ in range(int(dur_step / self.world.dt)):
+#                 self.world.step()
     
-    def shake_hand(self,pre_dist):
-        grasp_id = self.grasp_object_id()
-        current_pose = self.body.get_pose()
-        x,y,z = current_pose.translation[0],current_pose.translation[1],current_pose.translation[2]
-        default_position = [x, y, z]
-        shake_position = [x, y, z+0.05]
-        hand_orientation2 = pybullet.getQuaternionFromEuler([np.pi, 0, -np.pi/2])
-        shake_orientation1 = pybullet.getQuaternionFromEuler([np.pi, -np.pi / 12, -np.pi/2])
-        shake_orientation2 = pybullet.getQuaternionFromEuler([np.pi, np.pi / 12, -np.pi/2])
-        new_trans = current_pose.translation + np.array([0.,0.,0.05])
-        self.move_tcp_pose(target=Transform(rotation=Rotation.from_quat(hand_orientation2),translation=new_trans))
-        #check drop
-        if self.is_dropped(grasp_id,pre_dist):
-            return False
-        self.move_tcp_pose(target=Transform(rotation=Rotation.from_quat(hand_orientation2), translation=default_position))
-        #check drop
-        if self.is_dropped(grasp_id,pre_dist):
-            return False
-        self.move_tcp_pose(target=Transform(rotation=Rotation.from_quat(hand_orientation2), translation=shake_position))
-        # check drop
-        if self.is_dropped(grasp_id,pre_dist):
-            return False
-        self.move_tcp_pose(target=Transform(rotation=Rotation.from_quat(hand_orientation2), translation=default_position))
-        # check drop
-        if self.is_dropped(grasp_id,pre_dist):
-            return False
-        self.move_tcp_pose(target=Transform(rotation=Rotation.from_quat(shake_orientation1), translation=default_position))
-        # check drop
-        if self.is_dropped(grasp_id,pre_dist):
-            return False
-        self.move_tcp_pose(target=Transform(rotation=Rotation.from_quat(shake_orientation2), translation=default_position))
-        # check drop
-        if self.is_dropped(grasp_id,pre_dist):
-            return False
-        else:
-            return True
+#     def shake_hand(self,pre_dist):
+#         grasp_id = self.grasp_object_id()
+#         current_pose = self.body.get_pose()
+#         x,y,z = current_pose.translation[0],current_pose.translation[1],current_pose.translation[2]
+#         default_position = [x, y, z]
+#         shake_position = [x, y, z+0.05]
+#         hand_orientation2 = pybullet.getQuaternionFromEuler([np.pi, 0, -np.pi/2])
+#         shake_orientation1 = pybullet.getQuaternionFromEuler([np.pi, -np.pi / 12, -np.pi/2])
+#         shake_orientation2 = pybullet.getQuaternionFromEuler([np.pi, np.pi / 12, -np.pi/2])
+#         new_trans = current_pose.translation + np.array([0.,0.,0.05])
+#         self.move_tcp_pose(target=Transform(rotation=Rotation.from_quat(hand_orientation2),translation=new_trans))
+#         #check drop
+#         if self.is_dropped(grasp_id,pre_dist):
+#             return False
+#         self.move_tcp_pose(target=Transform(rotation=Rotation.from_quat(hand_orientation2), translation=default_position))
+#         #check drop
+#         if self.is_dropped(grasp_id,pre_dist):
+#             return False
+#         self.move_tcp_pose(target=Transform(rotation=Rotation.from_quat(hand_orientation2), translation=shake_position))
+#         # check drop
+#         if self.is_dropped(grasp_id,pre_dist):
+#             return False
+#         self.move_tcp_pose(target=Transform(rotation=Rotation.from_quat(hand_orientation2), translation=default_position))
+#         # check drop
+#         if self.is_dropped(grasp_id,pre_dist):
+#             return False
+#         self.move_tcp_pose(target=Transform(rotation=Rotation.from_quat(shake_orientation1), translation=default_position))
+#         # check drop
+#         if self.is_dropped(grasp_id,pre_dist):
+#             return False
+#         self.move_tcp_pose(target=Transform(rotation=Rotation.from_quat(shake_orientation2), translation=default_position))
+#         # check drop
+#         if self.is_dropped(grasp_id,pre_dist):
+#             return False
+#         else:
+#             return True
         
-    def is_dropped(self,object_id,prev_dist):
-        pos,_ = pybullet.getBasePositionAndOrientation(object_id)
-        dist_from_hand = np.linalg.norm(np.array(pos) - np.array(self.body.get_pose().translation))
-        if np.isclose(prev_dist,dist_from_hand,atol=0.1):
-            return False
-        else:
-            return True
+#     def is_dropped(self,object_id,prev_dist):
+#         pos,_ = pybullet.getBasePositionAndOrientation(object_id)
+#         dist_from_hand = np.linalg.norm(np.array(pos) - np.array(self.body.get_pose().translation))
+#         if np.isclose(prev_dist,dist_from_hand,atol=0.1):
+#             return False
+#         else:
+#             return True

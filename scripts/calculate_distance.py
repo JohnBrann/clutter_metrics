@@ -31,7 +31,7 @@ def safe_basename_no_ext(path):
 def rgb_to_hex(rgb):
     return "#{:02x}{:02x}{:02x}".format(rgb[0], rgb[1], rgb[2])
 
-def color_distance(c1, c2):
+def color_proximity(c1, c2):
     a = np.array(c1, dtype=np.float32)
     b = np.array(c2, dtype=np.float32)
     return float(np.linalg.norm(a - b))
@@ -257,7 +257,7 @@ def filter_segments_by_excluded_colors(segments, excluded_colors, color_tol):
                     drop = True
                     break
             else:
-                if color_distance(seg.color, ex) <= float(color_tol):
+                if color_proximity(seg.color, ex) <= float(color_tol):
                     drop = True
                     break
         if drop:
@@ -268,10 +268,10 @@ def filter_segments_by_excluded_colors(segments, excluded_colors, color_tol):
 
 
 # ----------------------------
-# Nearest-other distance computation
+# Nearest-other proximity computation
 # ----------------------------
 
-def compute_nearest_object_distances(segments):
+def compute_nearest_object_proximities(segments):
     """
     For EACH boundary point of EACH segment:
       connect to the nearest boundary point on ANY OTHER segment.
@@ -422,11 +422,11 @@ def process_single_image(img_path, out_dir, spacing_px, min_pixels, excluded_col
 
     base = safe_basename_no_ext(img_path)
 
-    # Compute distances and write CSV + trailing average row
-    rows = compute_nearest_object_distances(segments)
+    # Compute proximities and write CSV + trailing average row
+    rows = compute_nearest_object_proximities(segments)
     rows = remove_self_overlapping_lines(rows, segments, ignore_start_px=2) # removes self overlapping lines
 
-    csv_out = os.path.join(out_dir, f"{base}_distances.csv")
+    csv_out = os.path.join(out_dir, f"{base}_proximities.csv")
 
     dists = [r[2] for r in rows]
     avg = float(np.mean(dists)) if len(dists) > 0 else float("nan")
@@ -434,8 +434,8 @@ def process_single_image(img_path, out_dir, spacing_px, min_pixels, excluded_col
     with open(csv_out, "w", newline="") as f:
         w = csv.writer(f)
         # w.writerow(["source_obj", "source_idx", "target_obj", "target_idx",
-        #             "distance_px", "src_x", "src_y", "tgt_x", "tgt_y"])
-        w.writerow(["source_obj", "source_idx","distance_px"])
+        #             "proximity_px", "src_x", "src_y", "tgt_x", "tgt_y"])
+        w.writerow(["source_obj", "source_idx","proximity_px"])
 
         for (src_i, tgt_i, dist, sy, sx, ty, tx) in rows:
             # w.writerow([
@@ -453,7 +453,7 @@ def process_single_image(img_path, out_dir, spacing_px, min_pixels, excluded_col
         w.writerow(["AVG_DISTANCE_PX", f"{avg:.3f}"])
 
     #  save visualization
-    viz_out = os.path.join(out_dir, f"{base}_distances_viz.png")
+    viz_out = os.path.join(out_dir, f"{base}_proximities_viz.png")
     visualize_connections(masked, segments, rows, viz_out)
 
     return avg
@@ -516,20 +516,20 @@ def snap_points_to_mask(sampled_yx, mask, boundary_yx=None, max_snap_dist=None, 
 # ----------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Batch compute 2D perimeter-corrected distances for segmented images in a folder.")
+    parser = argparse.ArgumentParser(description="Batch compute 2D perimeter-corrected proximities for segmented images in a folder.")
     parser.add_argument("--dataset-name", required=True, help="Dataset folder name under ./data/<dataset_name>/")
     parser.add_argument("--spacing", type=float, default=16.0, help="Distance between sampled boundary points in pixels (default: 16.0).")
     parser.add_argument("--min-pixels", type=int, default=5, help="Minimum pixels for an object segment to be considered (default: 5).")
-    parser.add_argument("--skip-patterns", default="_distances,_metrics,_masked", help="Comma-separated substrings; files containing any will be skipped (default: '_distances,_metrics,_masked').")
+    parser.add_argument("--skip-patterns", default="_proximities,_metrics,_masked", help="Comma-separated substrings; files containing any will be skipped (default: '_proximities,_metrics,_masked').")
     parser.add_argument("--occlusion-threshold", type=float, default=70.0, help="Occlusion threshold pct: objects with occlusion_pct >= this are excluded (default 50.0).")
-    parser.add_argument("--occlusion-color-tol", type=int, default=0, help="Color distance tolerance (Euclidean) used when comparing segment color to excluded colors (default 0 = exact match).")
+    parser.add_argument("--occlusion-color-tol", type=int, default=0, help="Color proximity tolerance (Euclidean) used when comparing segment color to excluded colors (default 0 = exact match).")
     args = parser.parse_args()
 
-    print(f'calculating distance for {args.dataset_name}')
+    print(f'calculating proximity for {args.dataset_name}')
+    base_dir = os.path.join(".", "scenes", args.dataset_name)
     # base_dir = os.path.join("..", "data", "replica", args.dataset_name)
-    base_dir = os.path.join("..", "data", "replica", args.dataset_name)
     input_dir = os.path.join(base_dir, "scene_groundtruths")
-    out_dir = os.path.join(base_dir, "distance")
+    out_dir = os.path.join(base_dir, "proximity")
     os.makedirs(out_dir, exist_ok=True)
 
     occl_csv = os.path.join(base_dir, "occlusion", "per_object_occlusion.csv")
@@ -544,7 +544,7 @@ def main():
     files = sorted(glob(os.path.join(input_dir, "*.png")))
     processed = 0
 
-    view_avgs = []   # list of (view, avg_distance)
+    view_avgs = []   # list of (view, avg_proximity)
 
     for fpath in files:
         base = os.path.basename(fpath)
@@ -554,7 +554,7 @@ def main():
         view = parse_view_from_filename(base)
         excluded_colors_for_view = excluded_colors_map.get(view, None) if view else None
 
-        avg_distance = process_single_image(
+        avg_proximity = process_single_image(
             fpath,
             out_dir=out_dir,
             spacing_px=args.spacing,
@@ -565,14 +565,14 @@ def main():
 
         processed += 1
 
-        view_avgs.append((view, avg_distance))
+        view_avgs.append((view, avg_proximity))
 
     # ---- write single summary CSV ----
-    summary_csv = os.path.join(out_dir, "distance_summary.csv")
+    summary_csv = os.path.join(out_dir, "proximity_summary.csv")
 
     with open(summary_csv, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["viewpoint", "avg_distance"])
+        w.writerow(["viewpoint", "avg_proximity"])
 
         for view, avg in view_avgs:
             # print(f'{view}')
@@ -587,6 +587,13 @@ def main():
     print(f"Processed {processed} images.")
     print(f"Summary CSV written to: {summary_csv}")
 
+
+    # Write to metrics file
+    # Append proximity to metrics file
+    metrics_csv_path = os.path.join(base_dir, "metrics.csv")
+    with open(metrics_csv_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["avg_proximity", f"{scene_avg:.6f}"])
 
 if __name__ == "__main__":
     main()

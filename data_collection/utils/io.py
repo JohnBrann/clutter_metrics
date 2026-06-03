@@ -11,21 +11,22 @@ from utils.transform import Rotation, Transform
 
 def write_setup(root, size, intrinsic):
     data = {
-        "size": size,
+        # "size": size,
         "intrinsic": intrinsic.to_dict(),
-        "max_opening_width": max_opening_width,
-        "finger_depth": finger_depth,
+        # "max_opening_width": max_opening_width,
+        # "finger_depth": finger_depth,
     }
-    write_json(data, root / "setup.json")
+    write_json(data, root / "camera_intrinsic.json")
 
 
 def read_setup(root):
-    data = read_json(root / "setup.json")
-    size = data["size"]
+    data = read_json(root / "camera_intrinsic.json")
+    # size = data["size"]
     intrinsic = CameraIntrinsic.from_dict(data["intrinsic"])
-    max_opening_width = data["max_opening_width"]
-    finger_depth = data["finger_depth"]
-    return size, intrinsic, max_opening_width, finger_depth
+    # max_opening_width = data["max_opening_width"]
+    # finger_depth = data["finger_depth"]
+    # return size, intrinsic, max_opening_width, finger_depth
+    return intrinsic
 
 
 def write_sensor_data(root, depth_imgs, extrinsics):

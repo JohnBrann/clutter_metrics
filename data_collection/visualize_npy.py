@@ -306,8 +306,8 @@ def main():
     if scene_arg.exists():
         scene_dir = scene_arg
     # layout: ../data/<scene_name>
-    elif (Path("../data") / scene_arg).exists():
-        scene_dir = Path("../data") / scene_arg
+    elif (Path("../scenes") / scene_arg).exists():
+        scene_dir = Path("../scenes") / scene_arg
     # replica layout: ../data/replica/<scene_name>
     elif (Path("../data/replica") / scene_arg).exists():
         scene_dir = Path("../data/replica") / scene_arg
@@ -315,7 +315,7 @@ def main():
     else:
         raise FileNotFoundError(f"Could not resolve scene path from: {args.scene}")
 
-    npz_path = next(scene_dir.glob("*.npz"))  
+    npz_path = next(scene_dir.glob("*_data.npz"))  
 
     print(f"Using bundle: {npz_path}")
 

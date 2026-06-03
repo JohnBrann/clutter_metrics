@@ -6,6 +6,8 @@ import json
 import numpy as np
 from uuid import uuid4
 import math
+import yaml
+import random
 
 from utils.perception import camera_on_sphere
 from experiment.simulation import ClutterRemovalSim
@@ -122,7 +124,7 @@ def build_extrinsics(sim):
 # ----------------------------
 def save_scene_single_file(out_dir: Path,
                            scene_id: str,
-                           object_set: str,
+                           scene_name: str,
                            depth_imgs: np.ndarray,
                            seg_imgs: np.ndarray,
                            extr_list: np.ndarray,
@@ -149,7 +151,7 @@ def save_scene_single_file(out_dir: Path,
     """
     # scenes_dir = save_root / "scenes"
     # scenes_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{object_set}_scene.npz"
+    out_path = out_dir / "raw_scene_data.npz"
     np.savez_compressed(
         out_path,
         scene_id=np.array(scene_id),
@@ -309,36 +311,109 @@ def render_object_solo(sim, T, target_uid, all_body_uids, saved_poses):
     return mask, uid_mask, depth_solo
 
 
+
+def save_viewpoint_images(sim, out_dir: Path, target=(0.0, 0.0, 0.0), elevation_deg=45.0, radius=0.5):
+    """
+    Capture 4 RGB images around the scene at 45-degree elevation,
+    each 90 degrees apart in azimuth, all looking at target.
+    Saves as viewpoint_1.png ... viewpoint_4.png in out_dir.
+    """
+    from PIL import Image
+
+    azimuths_deg = [0, 90, 180, 270]
+    elevation_rad = math.radians(elevation_deg)
+
+    for i, az_deg in enumerate(azimuths_deg):
+        az_rad = math.radians(az_deg)
+
+        # Compute camera position on sphere around target
+        eye_x = target[0] + radius * math.cos(elevation_rad) * math.cos(az_rad)
+        eye_y = target[1] + radius * math.cos(elevation_rad) * math.sin(az_rad)
+        eye_z = target[2] + radius * math.sin(elevation_rad)
+
+        view_matrix = sim.world.p.computeViewMatrix(
+            cameraEyePosition=[eye_x, eye_y, eye_z],
+            cameraTargetPosition=list(target),
+            cameraUpVector=[0, 0, 1]
+        )
+
+        W = sim.camera.intrinsic.width
+        H = sim.camera.intrinsic.height
+
+        projection_matrix = sim.world.p.computeProjectionMatrixFOV(
+            fov=60,
+            aspect=W / H,
+            nearVal=0.01,
+            farVal=10.0
+        )
+
+        _, _, rgb, _, _ = sim.world.p.getCameraImage(
+            width=W,
+            height=H,
+            viewMatrix=view_matrix,
+            projectionMatrix=projection_matrix,
+            renderer=sim.world.p.ER_TINY_RENDERER
+        )
+
+        rgb_array = np.array(rgb, dtype=np.uint8).reshape(H, W, 4)[:, :, :3]
+        out_path = out_dir / f"viewpoint_{i+1}.png"
+        Image.fromarray(rgb_array).save(out_path)
+        print(f"[saved] viewpoint_{i+1}.png -> {out_path.resolve()}")
+
+
 # ----------------------------
 # Main (per-viewpoint ordering; viewpoints from in-code list only)
 # ----------------------------
 def main():
+
+    # Load scene cfg file: config/scene_config.yaml
+    with open("config/scene_config.yaml", "r") as file:
+        scene_config = yaml.safe_load(file)
+
+    scene_type = scene_config["scene_type"]
+    scene_name = scene_config["scene_name"]
+
+    # Object Parameters
+    object_set = scene_config["object_set"]
+    number_of_objects = random.randint(scene_config["num_objects"][0], scene_config["num_objects"][1])
+    allow_duplicate_objects = scene_config["allow_duplicate_objects"]
+    list_of_objects = scene_config["list_of_objects"]
+
+    # Boundary Parameters
+    boundary_type = scene_config["boundary_shape"]
+    boundary_radius = random.uniform(scene_config["boundary_radius"][0], scene_config["boundary_radius"][1])
+    remove_boundary = scene_config["remove_boundary"]
+    
+
+    # Place holders for future specific config settings
+    print(f'Scene Type: {scene_type}')
+    if scene_type == "packed":
+        return
+    elif scene_type == "replica":
+        return
+
+
     parser = argparse.ArgumentParser()
-    # parser.add_argument("--root", type=Path, default=Path("labeled_data"))
-    parser.add_argument("--scene", type=str, choices=["pile", "packed", "replica", "shelf"], default="pile")
-    parser.add_argument("--object-set", type=str, default="blocks")
     parser.add_argument("--sim-gui", action="store_true")
     parser.add_argument("--delay", type=float, default=0.0,
                         help="Seconds between viewpoints.")
     parser.add_argument("--idle-after", action="store_true",
                         help="Idle after the tour so the GUI stays open.")
-    parser.add_argument("--remove-box", action="store_true",
-                        help="remove the box from the scene or not")
     parser.add_argument("--replica-scene-id",type=str,
         default="1",help="")
 
     args = parser.parse_args()
 
-    dataset_name = Path(args.object_set).name
-
-    if args.scene == "replica":
-        out_dir = Path("../data") / "replica" / args.replica_scene_id
+    if scene_type == "replica":
+        out_dir = Path("../scenes") / "replica" / args.replica_scene_id
     else:
-        out_dir = Path("../data") / dataset_name
+        out_dir = Path("../scenes") / scene_name
 
 
     np.random.seed()
-    sim = ClutterRemovalSim(args.scene, args.object_set, gui=args.sim_gui, remove_box=args.remove_box, replica_scene_id=args.replica_scene_id)
+    sim = ClutterRemovalSim(scene_type, object_set, scene_name=scene_name, number_of_objects=number_of_objects, allow_duplicate_objects=allow_duplicate_objects, 
+                            list_of_objects=list_of_objects, gui=args.sim_gui, seed=None, save_dir=None, save_freq=8, boundary_type=boundary_type, 
+                            boundary_radius=boundary_radius, remove_boundary=remove_boundary, replica_scene_id=1 )
 
     # Output root + setup metadata
     (out_dir).mkdir(parents=True, exist_ok=True)
@@ -351,6 +426,9 @@ def main():
     # Build one cluttered scene and settle
     object_count = 5
     sim.reset(object_count)
+
+    # Capture RGB images
+    save_viewpoint_images(sim, out_dir, target=(0.0, 0.0, 0.0), elevation_deg=45.0, radius=0.5)
 
     extrinsics, theta_phi_pairs = build_extrinsics(sim)
     extrinsics_xyz = [list(t.translation) for t in extrinsics]
@@ -401,12 +479,12 @@ def main():
         cam_pos = T.translation
         th_deg, ph_deg = theta_phi_pairs[i]
         if sim.gui:
-            r, theta, phi, _, _ = extrinsics_to_spherical(T, center, args.scene)
+            r, theta, phi, _, _ = extrinsics_to_spherical(T, center, scene_type)
             set_gui_camera_from_sphere(sim, r, theta, phi)
         view_theta_deg[i] = th_deg
         view_phi_deg[i] = ph_deg
 
-        #  render full scene ---
+        #  render full scene
         set_all_bodies_visibility(sim.world, True)
         d_full, seg_full = render_full_scene(sim, T)
         depth_imgs[i] = d_full
@@ -430,7 +508,7 @@ def main():
             per_obj_seg_uids[i, j] = uid_mask
             time.sleep(args.delay)
 
-        # --- Step 3: Restore all body poses for next viewpoint ---
+        #  Restore all body poses for next viewpoint
         restore_body_poses(sim.world.p, saved_poses)
         
         if args.delay > 0:
@@ -449,7 +527,7 @@ def main():
     out_path = save_scene_single_file(
         out_dir,
         scene_id,
-        dataset_name,
+        scene_name,
         depth_imgs,
         seg_imgs,
         extr_list,
@@ -461,31 +539,6 @@ def main():
         view_theta_deg,
         view_phi_deg,
     )
-
-    # Write a small manifest JSON
-    manifest = {
-        "scene_id": scene_id,
-        "bodies": bodies,
-        "object_uids": [int(u) for u in obj_uids],
-        "uid_colors": {int(uid): uid_color_lut[i].tolist() for i, uid in enumerate(obj_uids)},
-        "n_viewpoints": len(extrinsics),
-        "angles_deg": {
-            "theta": view_theta_deg.tolist(),
-            "phi": view_phi_deg.tolist(),
-        },
-        "shapes": {
-            "depth_imgs": list(depth_imgs.shape),
-            "seg_imgs": list(seg_imgs.shape),
-            "per_obj_masks": list(per_obj_masks.shape),
-            "per_obj_seg_uids": list(per_obj_seg_uids.shape),
-            "uid_color_lut": list(uid_color_lut.shape),
-        },
-        "output_npz": str(out_path.name),
-    }
-    man_path = out_dir / f"{dataset_name}_manifest.json"
-    with open(man_path, "w") as f:
-        json.dump(manifest, f, indent=2)
-    print("[saved] manifest ->", man_path.resolve())
 
     # Optionally keep GUI running
     if args.sim_gui and args.idle_after:
