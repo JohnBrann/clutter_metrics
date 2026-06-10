@@ -8,6 +8,8 @@ from uuid import uuid4
 import math
 import yaml
 import random
+import csv
+import os
 
 from utils.perception import camera_on_sphere
 from experiment.simulation import ClutterRemovalSim
@@ -18,8 +20,8 @@ R_FACTOR =2.0
 PHI = -math.pi / 2                  
 BASE_PHI_RAD = -math.pi / 2
 EPS_THETA = 1e-3                  
-THETA_STEP_DEG = 45
-AZIMUTH_STEP_DEG = 45
+THETA_STEP_DEG = 18
+AZIMUTH_STEP_DEG = 10
 VIEW_THETAS_DEG = sorted(set(list(range(0, 90, THETA_STEP_DEG)) + [90]))
 
 # Generate azimuth offsets (0..359 by step). 360 is equivalent to 0 so we stop at 360 (exclusive).
@@ -97,7 +99,8 @@ def build_extrinsics(sim):
     thetas = [max(math.radians(t), EPS_THETA) for t in VIEW_THETAS_DEG]
     phis   = [BASE_PHI_RAD + math.radians(d) for d in AZIMUTH_OFFSETS_DEG]
 
-    origin = Transform(Rotation.identity(), np.r_[sim.size/2, sim.size/2, sim.size/3])
+    # origin = Transform(Rotation.identity(), np.r_[sim.size/2, sim.size/2, sim.size/3])
+    origin = Transform(Rotation.identity(), np.r_[0.0, 0.0, 0.0])
     r = R_FACTOR * sim.size
 
     extrinsics = []
@@ -108,14 +111,14 @@ def build_extrinsics(sim):
             extrinsics.append(camera_on_sphere(origin, r, th, ph))
             theta_phi_pairs.append((th_deg, ph_deg))  # Store input degrees directly
 
-    print(f"R: {r}")
-    print(f"Theta, Phi:\n{theta_phi_pairs}")
+    # print(f"R: {r}")
+    # print(f"Theta, Phi:\n{theta_phi_pairs}")
 
 
-    print(f"[info] Viewpoints: {len(phis)} azimuth(s) x {len(thetas)} elevation(s) "
-          f"= {len(extrinsics)} total")
-    print(f"[info] Azimuths deg: {AZIMUTH_OFFSETS_DEG} (base={math.degrees(BASE_PHI_RAD):.1f}°)")
-    print(f"[info] Elevations deg: {VIEW_THETAS_DEG} (0° nudged by {EPS_THETA} rad), r≈{r:.3f}")
+    # print(f"[info] Viewpoints: {len(phis)} azimuth(s) x {len(thetas)} elevation(s) "
+    #       f"= {len(extrinsics)} total")
+    # print(f"[info] Azimuths deg: {AZIMUTH_OFFSETS_DEG} (base={math.degrees(BASE_PHI_RAD):.1f}°)")
+    # print(f"[info] Elevations deg: {VIEW_THETAS_DEG} (0° nudged by {EPS_THETA} rad), r≈{r:.3f}")
     
     return extrinsics, theta_phi_pairs
 
@@ -358,7 +361,7 @@ def save_viewpoint_images(sim, out_dir: Path, target=(0.0, 0.0, 0.0), elevation_
         rgb_array = np.array(rgb, dtype=np.uint8).reshape(H, W, 4)[:, :, :3]
         out_path = out_dir / f"viewpoint_{i+1}.png"
         Image.fromarray(rgb_array).save(out_path)
-        print(f"[saved] viewpoint_{i+1}.png -> {out_path.resolve()}")
+        # print(f"[saved] viewpoint_{i+1}.png -> {out_path.resolve()}")
 
 
 # ----------------------------
@@ -372,6 +375,7 @@ def main():
 
     scene_type = scene_config["scene_type"]
     scene_name = scene_config["scene_name"]
+    scene_prefix = scene_config["scene_prefix"]
 
     # Object Parameters
     object_set = scene_config["object_set"]
@@ -386,7 +390,15 @@ def main():
     
 
     # Place holders for future specific config settings
+    print(f'\nScene Configuration:')    
+
+    scene_name = scene_prefix + scene_name
+    print(f'Scene Name: {scene_name}')
     print(f'Scene Type: {scene_type}')
+    print(f'Object Set: {object_set}')
+    print(f'Number of Objects: {number_of_objects}')
+
+
     if scene_type == "packed":
         return
     elif scene_type == "replica":
@@ -428,7 +440,7 @@ def main():
     sim.reset(object_count)
 
     # Capture RGB images
-    save_viewpoint_images(sim, out_dir, target=(0.0, 0.0, 0.0), elevation_deg=45.0, radius=0.5)
+    save_viewpoint_images(sim, out_dir, target=(0.0, 0.0, 0.0), elevation_deg=45.0, radius=0.4)
 
     extrinsics, theta_phi_pairs = build_extrinsics(sim)
     extrinsics_xyz = [list(t.translation) for t in extrinsics]
@@ -448,14 +460,26 @@ def main():
     print("[info] Bodies in scene:")
     for b in bodies:
         print(f"  - uid={b['uid']:>3}  name='{b['name']}'")
-    print(f"[info] Object UIDs (count={len(obj_uids)}): {obj_uids}")
+    # print(f"[info] Object UIDs (count={len(obj_uids)}): {obj_uids}")
+
+
+     # Write to CSV
+    objects_csv_path = os.path.join("..", "scenes", scene_name, "objects.csv")
+    os.makedirs(os.path.dirname(objects_csv_path), exist_ok=True)
+    with open(objects_csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["uid", "object_name"])
+        for b in bodies:
+            writer.writerow([b["uid"], b["name"]])
+    print(f"[info] Saved objects list to {objects_csv_path}")
+
 
     # Generate consistent color LUT for all objects
     uid_color_lut = generate_uid_color_lut(obj_uids)
-    print(f"[info] Generated color LUT for {len(obj_uids)} objects:")
+    # print(f"[info] Generated color LUT for {len(obj_uids)} objects:")
     for i, uid in enumerate(obj_uids):
         rgb = uid_color_lut[i, :3]
-        print(f"  - UID {uid}: RGB({rgb[0]}, {rgb[1]}, {rgb[2]})")
+        # print(f"  - UID {uid}: RGB({rgb[0]}, {rgb[1]}, {rgb[2]})")
 
     # Allocate outputs
     H, W = sim.camera.intrinsic.height, sim.camera.intrinsic.width

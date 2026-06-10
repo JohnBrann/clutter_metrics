@@ -317,7 +317,7 @@ def main():
 
     npz_path = next(scene_dir.glob("*_data.npz"))  
 
-    print(f"Using bundle: {npz_path}")
+    # print(f"Using bundle: {npz_path}")
 
     bundle = load_bundle(npz_path)
 
@@ -329,16 +329,16 @@ def main():
     theta_deg = bundle.get("view_theta_deg", None)      # (N,) float32 or None
     phi_deg = bundle.get("view_phi_deg", None)          # (N,) float32 or None
 
-    if segs is not None:
-        print(f"Loaded scene seg:        {segs.shape} (N,H,W)")
-    if per_obj_masks is not None:
-        print(f"Loaded per-object masks: {per_obj_masks.shape} (N,K,H,W)")
-    if per_obj_seg_uids is not None:
-        print(f"Loaded per-object UIDs:  {per_obj_seg_uids.shape} (N,K,H,W)")
-    if uid_color_lut is not None:
-        print(f"Loaded UID color LUT:    {uid_color_lut.shape} (K,4)")
-    if obj_uids is not None:
-        print(f"Loaded object UIDs:      {obj_uids.shape} (K,)")
+    # if segs is not None:
+    #     print(f"Loaded scene seg:        {segs.shape} (N,H,W)")
+    # if per_obj_masks is not None:
+    #     print(f"Loaded per-object masks: {per_obj_masks.shape} (N,K,H,W)")
+    # if per_obj_seg_uids is not None:
+    #     print(f"Loaded per-object UIDs:  {per_obj_seg_uids.shape} (N,K,H,W)")
+    # if uid_color_lut is not None:
+    #     print(f"Loaded UID color LUT:    {uid_color_lut.shape} (K,4)")
+    # if obj_uids is not None:
+    #     print(f"Loaded object UIDs:      {obj_uids.shape} (K,)")
 
     # Determine frame count (N)
     n_seg = segs.shape[0] if segs is not None else 0
@@ -402,7 +402,7 @@ def main():
                     uid = int(obj_uids[k])
                     cv2.imwrite(str(object_dir / f"{tag}_obj{uid:03d}_color.png"), colored_mask)
 
-    print(f"Saved segmentation PNGs to: {outdir.resolve()}")
+    print(f"Saved segmentation PNGs in: {outdir.resolve()}")
 
 if __name__ == "__main__":
     main()

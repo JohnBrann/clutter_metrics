@@ -1,18 +1,25 @@
 # Scene Configuration
 # scene_type options: packed, piled
 scene_type: pile
-scene_name: "3"
+
+# Scene name and prefix are overwritten in "../scripts/generatea_and_eval_scenes.sh" script. 
+scene_name: "001"
+scene_prefix: "batch1_"
 
 # Object Parameters
 object_set: moad # name of folder of objects_sets (objects_sets/<folder_name>)
-num_objects: [5,7]
+num_objects: [4,7] # number of objects in a scene are randomly sampled from range provided
 allow_duplicate_objects: True
-list_of_objects:
+list_of_objects: # specify grouping of objects to pick from
+  - at1b1_bar-16mm
+  - atb1_conn-dsub
+  - atb1_conn-wp
   - atb1_gear-large
-  - atb2_round-pulley-small
-  - atb3_flat-mount
+  - atb1_gear-medium
+  - atb1_gear-small
+  - atb1_nut-m16
 
 # Boundary Parameters
-boundary_shape: circle       # options: circle, bin
-boundary_radius: [0.1, 0.3]
+boundary_shape: bin       # options: circle, bin
+boundary_radius: [0.1, 0.3] # radius of boundary is randomly sampled from range provided
 remove_boundary: True        # set False to keep containing bin throughout data collection

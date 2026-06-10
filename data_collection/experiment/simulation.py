@@ -74,12 +74,12 @@ class ClutterRemovalSim(object):
     # Discovers objects in the structure expected from MOAD datasets
     def discover_objects(self):
         root = self.urdf_root / self.object_set
-        print(f'root: {root}')
+        # print(f'root: {root}')
         self.object_urdfs = sorted(
             (p for p in root.glob("*/fused/*.urdf") if p.is_file()),
             key=lambda p: p.stem
         )
-        print(f'Discovered Objects: {self.object_urdfs}')
+        # print(f'Discovered Objects: {self.object_urdfs}')
 
 
     # Determines objects to be used in scene given scene parameteres. Considers all parameters and returns a list of object
@@ -267,7 +267,7 @@ class ClutterRemovalSim(object):
 
         # determine objects for this scene (determine_objects takes into consideration the scene parameters and returns a list of objects that will be spawned)
         urdfs = self.determine_objects()
-        print(f'Objects being used: {urdfs}')
+        # print(f'Objects being used: {urdfs}')
 
         for urdf in urdfs:
             rotation = Rotation.random(random_state=self.rng)
@@ -457,7 +457,7 @@ class ClutterRemovalSim(object):
             
             uid_i = int(uid)
             if uid_i == 0:
-                print("[info] skipping plane (uid=0)")
+                # print("[info] skipping plane (uid=0)")
                 continue
             pos, orn = self.world.p.getBasePositionAndOrientation(uid_i)
 

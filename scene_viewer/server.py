@@ -2,27 +2,28 @@
 import os
 import csv
 import json
+import re
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse
 
 SCENES_DIR = "/home/csrobot/clutter_quantification/scenes"
 PORT = 8000
 
+# Matches {any_prefix}_{zero-padded-number}, e.g. batch1_001
+SCENE_PATTERN = re.compile(r'^(.+)_(\d+)$')
+
 
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
 
-        # API: list all scenes with their metrics
         if parsed.path == "/api/scenes":
             self.serve_json(get_scenes())
 
-        # API: detail for a single scene
         elif parsed.path.startswith("/api/scene/"):
             scene_id = parsed.path.split("/api/scene/")[-1]
             self.serve_json(get_scene_detail(scene_id))
 
-        # API: any viewpoint image /api/image/<id>/<filename>
         elif parsed.path.startswith("/api/image/"):
             parts = parsed.path.split("/api/image/")[-1].split("/")
             if len(parts) == 2:
@@ -33,7 +34,6 @@ class Handler(SimpleHTTPRequestHandler):
                     return
             self.send_error(404)
 
-        # Serve static files
         else:
             if parsed.path == "/":
                 parsed = parsed._replace(path="/index.html")
@@ -75,10 +75,11 @@ def get_scenes():
     for entry in os.scandir(SCENES_DIR):
         if not entry.is_dir():
             continue
-        try:
-            scene_id = int(entry.name)
-        except ValueError:
+        m = SCENE_PATTERN.match(entry.name)
+        if not m:
             continue
+        prefix = m.group(1)
+        num = int(m.group(2))
 
         csv_path = os.path.join(entry.path, "metrics.csv")
         if not os.path.isfile(csv_path):
@@ -97,22 +98,25 @@ def get_scenes():
 
         has_image = os.path.isfile(os.path.join(entry.path, "viewpoint_1.png"))
         scenes.append({
-            "id": scene_id,
+            "id":        entry.name,  # e.g. "batch1_001"
+            "prefix":    prefix,      # e.g. "batch1"
+            "num":       num,         # e.g. 1  (for numeric sort)
             "occlusion": occ,
             "proximity": prox,
             "has_image": has_image,
         })
 
-    scenes.sort(key=lambda s: s["id"])
+    scenes.sort(key=lambda s: (s["prefix"], s["num"]))
     return scenes
 
 
 def get_scene_detail(scene_id):
-    scene_path = os.path.join(SCENES_DIR, str(scene_id))
+    scene_path = os.path.join(SCENES_DIR, scene_id)
     if not os.path.isdir(scene_path):
         return {"error": f"Scene {scene_id} not found"}
 
-    # Collect all metrics from CSV
+    m = SCENE_PATTERN.match(scene_id)
+
     metrics = {}
     csv_path = os.path.join(scene_path, "metrics.csv")
     if os.path.isfile(csv_path):
@@ -124,7 +128,6 @@ def get_scene_detail(scene_id):
                     except ValueError:
                         metrics[row["metric"]] = row["value"]
 
-    # Find all viewpoint images viewpoint_1.png .. viewpoint_N.png
     viewpoints = []
     for i in range(1, 20):
         fname = f"viewpoint_{i}.png"
@@ -133,10 +136,22 @@ def get_scene_detail(scene_id):
         else:
             break
 
+    objects = []
+    objects_path = os.path.join(scene_path, "objects.csv")
+    if os.path.isfile(objects_path):
+        with open(objects_path, newline="") as f:
+            for row in csv.DictReader(f):
+                name = row.get("object_name", "").strip()
+                if name and name != "plane":
+                    objects.append(name)
+
     return {
-        "id": int(scene_id),
-        "metrics": metrics,
+        "id":        scene_id,
+        "prefix":    m.group(1) if m else "",
+        "num":       int(m.group(2)) if m else 0,
+        "metrics":   metrics,
         "viewpoints": viewpoints,
+        "objects":   objects,
     }
 
 

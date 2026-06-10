@@ -6,6 +6,7 @@ from glob import glob
 from collections import defaultdict
 
 import numpy as np
+from pathlib import Path
 from PIL import Image
 import matplotlib.pyplot as plt
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
@@ -16,7 +17,8 @@ def parse_args():
     p.add_argument("--dataset-name", type=str, help="Folder name under ./data/<dataset_name>.")
     p.add_argument("--threshold", type=int, default=0, help="RGB threshold [0..255]: pixel is object if any channel > threshold.")
     p.add_argument("--dpi", type=int, default=140, help="Figure DPI.")
-    p.add_argument("--max_cols", type=int, default=6, help="Max columns before wrapping rows.")
+    p.add_argument("--max-cols", type=int, default=6, help="Max columns before wrapping rows.")
+    p.add_argument("--create-images", action="store_true")
     return p.parse_args()
 
 
@@ -170,7 +172,7 @@ def make_report_figure(rgb_images, filenames, occlusion_pct, scene_overlay_rgb,
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
 
-def process_view(view_key, obj_list, scene_path, threshold, out_dir, dpi, max_cols):
+def process_view(view_key, obj_list, scene_path, threshold, out_dir, dpi, max_cols, create_images):
     """
     Process a single viewpoint:
       - obj_list is [(obj_id, path), ...] in bottom->top order
@@ -247,9 +249,9 @@ def process_view(view_key, obj_list, scene_path, threshold, out_dir, dpi, max_co
         occlusion_pct.append(pct)
 
     # Sanity warning: if an object's color never appears in the scene overlay, print a warning
-    for i, color in enumerate(obj_colors):
-        if not np.any(np.all(scene_rgb == color, axis=2)):
-            print(f"[warn] object file {os.path.basename(files[i])}: color {color.tolist()} not present in scene overlay — check naming/UID consistency.")
+    # for i, color in enumerate(obj_colors):
+    #     if not np.any(np.all(scene_rgb == color, axis=2)):
+    #         print(f"[warn] object file {os.path.basename(files[i])}: color {color.tolist()} not present in scene overlay — check naming/UID consistency.")
 
     # compute per-view std
     view_avg = float(np.mean(occlusion_pct)) if occlusion_pct else 0.0
@@ -261,15 +263,16 @@ def process_view(view_key, obj_list, scene_path, threshold, out_dir, dpi, max_co
     fig_path = os.path.join(out_dir, out_name)
 
     # Report figure (overlay = SCENE)
-    make_report_figure(
-        rgb_images=rgb_images,
-        filenames=files,
-        occlusion_pct=occlusion_pct,
-        scene_overlay_rgb=scene_rgb,
-        out_path=fig_path,
-        dpi=dpi,
-        max_cols=max_cols
-    )
+    if create_images:
+        make_report_figure(
+            rgb_images=rgb_images,
+            filenames=files,
+            occlusion_pct=occlusion_pct,
+            scene_overlay_rgb=scene_rgb,
+            out_path=fig_path,
+            dpi=dpi,
+            max_cols=max_cols
+        )
 
     # Per-view summary
     # print(f"[view theta{th}_phi{ph}] Saved report: {fig_path}")
@@ -280,11 +283,11 @@ def process_view(view_key, obj_list, scene_path, threshold, out_dir, dpi, max_co
         obj_id = int(m.group(3)) if m else None
         # print(f"  [{i:02d}] {base}  occlusion={pct:6.2f}%")
         per_object_rows.append({
-            "level": "object",
+            # "level": "object",
             "theta": int(th),
             "phi": int(ph),
             "obj_id": obj_id,
-            "filename": base,
+            # "filename": base,
             "occlusion_pct": round(pct, 6),
             "view_avg_pct": round(view_avg, 6),
             "view_std_pct": round(view_std, 6),
@@ -293,11 +296,11 @@ def process_view(view_key, obj_list, scene_path, threshold, out_dir, dpi, max_co
     # print(f"  View average occlusion: {view_avg:.2f}%  std: {view_std:.2f}%\n")
 
     view_row = {
-        "level": "view",
+        # "level": "view",
         "theta": int(th),
         "phi": int(ph),
         "obj_id": "",
-        "filename": "",
+        # "filename": "",
         "occlusion_pct": "",
         "view_avg_pct": round(view_avg, 6),
         "view_std_pct": round(view_std, 6),
@@ -327,9 +330,7 @@ def resolve_scene_root(dataset_name: str) -> str:
 def main():
     args = parse_args()
 
-    # CHANGED: derive input_dir/out_dir from dataset_name
     scene_root = resolve_scene_root(args.dataset_name)
-
     input_dir = os.path.join(scene_root, "scene_groundtruths")
     object_input_dir = os.path.join(scene_root, "object_groundtruths")
     out_dir = os.path.join(scene_root, "occlusion")
@@ -351,40 +352,65 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     # print("Computing representative colors for each object image...")
-    per_object_color_rows = []  
-    # objects_by_view: keys are (th, ph) as strings, values are lists [(obj_id, path), ...]
-    for (th, ph), obj_list in sorted(objects_by_view.items(), key=lambda kv: (int(kv[0][0]), int(kv[0][1]))):
-        for obj_id, path in obj_list:
-            base = os.path.basename(path)
-            try:
-                img = Image.open(path).convert("RGB")
-                rgb_arr = np.asarray(img, dtype=np.uint8)
-                r, g, b = representative_color_of_image(rgb_arr, background_threshold=threshold)
-            except Exception as e:
-                print(f"[warn] Failed to load/parse image for color extraction '{path}': {e}")
-                r, g, b = (0, 0, 0)
-            per_object_color_rows.append({
-                "theta": int(th),
-                "phi": int(ph),
-                "obj_id": int(obj_id),
-                "filename": base,
-                "r": int(r),
-                "g": int(g),
-                "b": int(b)
-            })
+    # per_object_color_rows = []  
+    # # objects_by_view: keys are (th, ph) as strings, values are lists [(obj_id, path), ...]
+    # for (th, ph), obj_list in sorted(objects_by_view.items(), key=lambda kv: (int(kv[0][0]), int(kv[0][1]))):
+    #     for obj_id, path in obj_list:
+    #         base = os.path.basename(path)
+    #         try:
+    #             img = Image.open(path).convert("RGB")
+    #             rgb_arr = np.asarray(img, dtype=np.uint8)
+    #             r, g, b = representative_color_of_image(rgb_arr, background_threshold=threshold)
+    #         except Exception as e:
+    #             print(f"[warn] Failed to load/parse image for color extraction '{path}': {e}")
+    #             r, g, b = (0, 0, 0)
+    #         per_object_color_rows.append({
+    #             "theta": int(th),
+    #             "phi": int(ph),
+    #             "obj_id": int(obj_id),
+    #             # "filename": base,
+    #             "r": int(r),
+    #             "g": int(g),
+    #             "b": int(b)
+    #         })
+
+    # # Write per-object colors CSV
+    # per_object_colors_path = os.path.join(out_dir, "per_object_colors.csv")
+    # try:
+    #     with open(per_object_colors_path, "w", newline="") as cf:
+    #         fieldnames = ["theta", "phi", "obj_id", "r", "g", "b"] #"filename",
+    #         writer = csv.DictWriter(cf, fieldnames=fieldnames)
+    #         writer.writeheader()
+    #         for row in per_object_color_rows:
+    #             writer.writerow(row)
+    #     # print(f"Wrote per-object color mapping to: {per_object_colors_path}")
+    # except Exception as e:
+    #     print(f"[error] failed to write per-object colors CSV {per_object_colors_path}: {e}")
+
+    # Load colors directly from the scene npz bundle
+    npz_path = Path(out_dir).parent / "raw_scene_data.npz"
+    if not npz_path.exists():
+        raise FileNotFoundError(f"Could not find scene bundle: {npz_path}")
+    data = np.load(npz_path, allow_pickle=True)
+    uid_color_lut = data["uid_color_lut"]  # (K, 4) RGBA
+    obj_uids = data["obj_uids"]            # (K,)
+    color_map = {
+        int(uid): tuple(int(c) for c in uid_color_lut[k, :3])
+        for k, uid in enumerate(obj_uids)
+    }
 
     # Write per-object colors CSV
     per_object_colors_path = os.path.join(out_dir, "per_object_colors.csv")
     try:
         with open(per_object_colors_path, "w", newline="") as cf:
-            fieldnames = ["theta", "phi", "obj_id", "filename", "r", "g", "b"]
-            writer = csv.DictWriter(cf, fieldnames=fieldnames)
+            writer = csv.DictWriter(cf, fieldnames=["obj_id", "r", "g", "b"])
             writer.writeheader()
-            for row in per_object_color_rows:
-                writer.writerow(row)
-        # print(f"Wrote per-object color mapping to: {per_object_colors_path}")
+            for obj_id, (r, g, b) in sorted(color_map.items()):
+                writer.writerow({"obj_id": obj_id, "r": r, "g": g, "b": b})
     except Exception as e:
-        print(f"[error] failed to write per-object colors CSV {per_object_colors_path}: {e}")
+        print(f"[error] Failed to write per-object colors CSV '{per_object_colors_path}': {e}")
+
+
 
     csv_path = os.path.join(out_dir, "occlusion_summary.csv")
     per_object_csv_path = os.path.join(out_dir, "per_object_occlusion.csv")
@@ -408,7 +434,7 @@ def main():
         obj_list = objects_by_view[view_key]  # [(obj_id, path), ...] bottom->top
         scene_path = scenes[view_key]
         pcts, view_avg, view_std, n, fig_path, per_object_rows, view_row = process_view(
-            view_key, obj_list, scene_path, threshold, out_dir, args.dpi, args.max_cols
+            view_key, obj_list, scene_path, threshold, out_dir, args.dpi, args.max_cols, args.create_images
         )
 
         # Record view summary
@@ -444,7 +470,7 @@ def main():
 
     # Use fieldnames matching the dict keys produced in per_object_rows
     if all_per_object_rows:
-        fieldnames = ["level", "theta", "phi", "obj_id", "filename",
+        fieldnames = ["theta", "phi", "obj_id", "filename",
                       "occlusion_pct", "view_avg_pct", "view_std_pct"]
         try:
             with open(per_object_csv_path, "w", newline="") as outf:
@@ -469,6 +495,8 @@ def main():
         writer = csv.writer(f)
         writer.writerow(["metric", "value"])
         writer.writerow(["avg_occlusion", f"{overall_avg:.6f}"])
+
+    print(f'Avg Occlusion: {overall_avg:.3f}')
 
 
 if __name__ == "__main__":

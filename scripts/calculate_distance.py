@@ -194,7 +194,28 @@ def parse_view_from_filename(filename):
     # return m.group(0)
     return (int(m.group(1)), int(m.group(2)))
 
+# def load_colors_csv(colors_csv_path):
+#     mapping = {}
+#     if not os.path.isfile(colors_csv_path):
+#         return mapping
+
+#     with open(colors_csv_path, newline="") as cf:
+#         reader = csv.DictReader(cf)
+#         for row in reader:
+#             th = int(row.get("theta", 0))
+#             ph = int(row.get("phi", 0))
+#             fname = row.get("filename") or row.get("file") or ""
+#             rgb = (int(row.get("r", 0)), int(row.get("g", 0)), int(row.get("b", 0)))
+#             mapping[(th, ph, fname)] = rgb
+#             if (0, 0, fname) not in mapping:
+#                 mapping[(0, 0, fname)] = rgb
+#     return mapping
+
 def load_colors_csv(colors_csv_path):
+    """
+    Loads per-object colors from CSV.
+    Returns: dict mapping obj_id (int) -> (r, g, b)
+    """
     mapping = {}
     if not os.path.isfile(colors_csv_path):
         return mapping
@@ -202,13 +223,12 @@ def load_colors_csv(colors_csv_path):
     with open(colors_csv_path, newline="") as cf:
         reader = csv.DictReader(cf)
         for row in reader:
-            th = int(row.get("theta", 0))
-            ph = int(row.get("phi", 0))
-            fname = row.get("filename") or row.get("file") or ""
-            rgb = (int(row.get("r", 0)), int(row.get("g", 0)), int(row.get("b", 0)))
-            mapping[(th, ph, fname)] = rgb
-            if (0, 0, fname) not in mapping:
-                mapping[(0, 0, fname)] = rgb
+            mapping[int(row["obj_id"])] = (
+                int(row["r"]),
+                int(row["g"]),
+                int(row["b"]),
+            )
+
     return mapping
 
 def load_occlusion_csv(occl_csv_path, threshold):
@@ -230,15 +250,23 @@ def load_occlusion_csv(occl_csv_path, threshold):
             excluded.setdefault((th, ph), set()).add(fname)
     return excluded
 
+# def build_excluded_colors_map(excluded_by_view, color_map):
+#     out = {}
+#     for (th, ph), fnames in excluded_by_view.items():
+#         s = set()
+#         for fname in fnames:
+#             if (th, ph, fname) in color_map:
+#                 s.add(color_map[(th, ph, fname)])
+#             elif (0, 0, fname) in color_map:
+#                 s.add(color_map[(0, 0, fname)])
+#         if s:
+#             out[(th, ph)] = s
+#     return out
+
 def build_excluded_colors_map(excluded_by_view, color_map):
     out = {}
-    for (th, ph), fnames in excluded_by_view.items():
-        s = set()
-        for fname in fnames:
-            if (th, ph, fname) in color_map:
-                s.add(color_map[(th, ph, fname)])
-            elif (0, 0, fname) in color_map:
-                s.add(color_map[(0, 0, fname)])
+    for (th, ph), obj_ids in excluded_by_view.items():
+        s = {color_map[oid] for oid in obj_ids if oid in color_map}
         if s:
             out[(th, ph)] = s
     return out
@@ -431,30 +459,30 @@ def process_single_image(img_path, out_dir, spacing_px, min_pixels, excluded_col
     dists = [r[2] for r in rows]
     avg = float(np.mean(dists)) if len(dists) > 0 else float("nan")
 
-    with open(csv_out, "w", newline="") as f:
-        w = csv.writer(f)
-        # w.writerow(["source_obj", "source_idx", "target_obj", "target_idx",
-        #             "proximity_px", "src_x", "src_y", "tgt_x", "tgt_y"])
-        w.writerow(["source_obj", "source_idx","proximity_px"])
+    # with open(csv_out, "w", newline="") as f:
+    #     w = csv.writer(f)
+    #     # w.writerow(["source_obj", "source_idx", "target_obj", "target_idx",
+    #     #             "proximity_px", "src_x", "src_y", "tgt_x", "tgt_y"])
+    #     w.writerow(["source_obj", "source_idx","proximity_px"])
 
-        for (src_i, tgt_i, dist, sy, sx, ty, tx) in rows:
-            # w.writerow([
-            #     segments[src_i].name, src_i,
-            #     segments[tgt_i].name, tgt_i,
-            #     f"{dist:.3f}",
-            #     sx, sy, tx, ty
-            # ])
-            w.writerow([
-                segments[src_i].name, src_i,
-                f"{dist:.3f}",
-            ])
+    #     for (src_i, tgt_i, dist, sy, sx, ty, tx) in rows:
+    #         # w.writerow([
+    #         #     segments[src_i].name, src_i,
+    #         #     segments[tgt_i].name, tgt_i,
+    #         #     f"{dist:.3f}",
+    #         #     sx, sy, tx, ty
+    #         # ])
+    #         w.writerow([
+    #             segments[src_i].name, src_i,
+    #             f"{dist:.3f}",
+    #         ])
 
-        w.writerow([])
-        w.writerow(["AVG_DISTANCE_PX", f"{avg:.3f}"])
+    #     w.writerow([])
+    #     w.writerow(["AVG_DISTANCE_PX", f"{avg:.3f}"])
 
     #  save visualization
     viz_out = os.path.join(out_dir, f"{base}_proximities_viz.png")
-    visualize_connections(masked, segments, rows, viz_out)
+    # visualize_connections(masked, segments, rows, viz_out)
 
     return avg
 
@@ -525,7 +553,7 @@ def main():
     parser.add_argument("--occlusion-color-tol", type=int, default=0, help="Color proximity tolerance (Euclidean) used when comparing segment color to excluded colors (default 0 = exact match).")
     args = parser.parse_args()
 
-    print(f'calculating proximity for {args.dataset_name}')
+    # print(f'calculating proximity for {args.dataset_name}')
     base_dir = os.path.join(".", "scenes", args.dataset_name)
     # base_dir = os.path.join("..", "data", "replica", args.dataset_name)
     input_dir = os.path.join(base_dir, "scene_groundtruths")
@@ -584,8 +612,8 @@ def main():
 
         w.writerow(["full_scene", f"{scene_avg:.3f}"])
 
-    print(f"Processed {processed} images.")
-    print(f"Summary CSV written to: {summary_csv}")
+    # print(f"Processed {processed} images.")
+    # print(f"Summary CSV written to: {summary_csv}")
 
 
     # Write to metrics file
@@ -594,6 +622,9 @@ def main():
     with open(metrics_csv_path, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["avg_proximity", f"{scene_avg:.6f}"])
+
+    print(f"Avg Proximity: {scene_avg:.3f}")
+
 
 if __name__ == "__main__":
     main()
