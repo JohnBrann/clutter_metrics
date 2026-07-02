@@ -63,9 +63,6 @@ chmod +x generate_and_eval_scenes.sh
 For more per-scene specifications (e.g. how many objects in a scene, allow duplicate objects in a scene), reference '/clutter_metrics/data_collection/config/scene_config.yaml'.
 
 
-
-
-
 ## User Interfaces
 We developed 3 user interfaces that can be used to help understand generated cluttered scenes. 2 of them used for visualization and understanding of a scenes and its corresponding metrics, and one for organizing many generated scenes. 
 

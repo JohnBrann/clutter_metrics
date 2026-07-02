@@ -20,7 +20,7 @@ R_FACTOR =2.0
 PHI = -math.pi / 2                  
 BASE_PHI_RAD = -math.pi / 2
 EPS_THETA = 1e-3                  
-THETA_STEP_DEG = 18
+THETA_STEP_DEG = 20
 AZIMUTH_STEP_DEG = 10
 VIEW_THETAS_DEG = sorted(set(list(range(0, 90, THETA_STEP_DEG)) + [90]))
 

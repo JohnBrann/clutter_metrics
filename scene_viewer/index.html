@@ -271,21 +271,17 @@
     </select>
   </div>
 
-  <div class="dual-stats">
-    <div>
-      <p class="metric-group-label">Occlusion</p>
-      <div class="stats-row" id="stats-occ"></div>
-    </div>
-    <div>
-      <p class="metric-group-label">Proximity</p>
-      <div class="stats-row" id="stats-prox"></div>
-    </div>
-  </div>
-
-  <div class="charts-grid">
+  <div style="margin-bottom: 1.5rem;">
+    <p class="metric-group-label">Occlusion</p>
+    <div class="stats-row" id="stats-occ" style="margin-bottom: 1rem;"></div>
     <div class="chart-wrap">
       <canvas id="chart-occ" role="img" aria-label="Bar chart of occlusion per scene"></canvas>
     </div>
+  </div>
+
+  <div style="margin-bottom: 0.5rem;">
+    <p class="metric-group-label">Proximity</p>
+    <div class="stats-row" id="stats-prox" style="margin-bottom: 1rem;"></div>
     <div class="chart-wrap">
       <canvas id="chart-prox" role="img" aria-label="Bar chart of proximity per scene"></canvas>
     </div>
